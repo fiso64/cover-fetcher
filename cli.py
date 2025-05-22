@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 ARG_DEFINITIONS: List[Tuple[List[str], Dict[str, Any]]] = [
     (["-r", "--artist"],        {"type": str, "help": "Start a search with album artist"}),
     (["-a", "--album"],         {"type": str, "help": "Start a search with album title (required if --artist is provided)"}),
-    (["query"],                 {"nargs": '?', "type": str, "help": "Album name or 'Artist - Album' format (instead of --artist and --album)"}),
+    (["query"],                 {"nargs": '?', "type": str, "help": "Album name, 'Artist - Album' string, or path to a music file (acts like --from-file if path)."}),
     (["--front-only"],          {"action": "store_true", "help": "Only search for front cover images"}),
     (["--no-front-only"],       {"action": "store_true", "help": "Search for all image types (disable front-only mode)"}),
     (["--services"],            {"type": str, "help": "Comma-separated list of services to enable (e.g. 'bandcamp,last.fm'). Order matters."}),
@@ -145,7 +145,38 @@ def _parse_arguments(is_console_mode: bool) -> Tuple[argparse.Namespace, argpars
 
 
     # --- Argument Validation / Post-processing not directly tied to config modification or from_file ---
+    
+    if args.query:
+        # Check if the positional query argument is an existing file path.
+        # This check must happen before treating 'query' as an "Artist - Album" string.
+        try:
+            # Expand user and check if it's a file.
+            # We don't resolve() here yet, as is_file() should work on relative/absolute paths.
+            # resolve() will be used when setting args.from_file to store a canonical path.
+            potential_file_path = pathlib.Path(args.query).expanduser()
+            if potential_file_path.is_file():
+                if args.from_file is not None:
+                    # Conflict: positional query is a file AND --from-file is also explicitly set.
+                    parser.error("Cannot use a file path as a positional query when --from-file is also specified.")
+                else:
+                    # Positional query is a file, and --from-file was not otherwise specified.
+                    # Treat the query as the source for --from-file.
+                    logger.info(f"Positional query argument '{args.query}' is an existing file. Processing as --from-file.")
+                    args.from_file = str(potential_file_path.resolve()) # Store the absolute, resolved path
+                    args.query = None  # Clear query to prevent it from being parsed as "Artist - Album".
+        except OSError as e:
+            # This might happen for exceptionally long or malformed path strings, though unlikely for typical argv.
+            logger.debug(f"Could not evaluate positional query '{args.query}' as a potential file path due to OSError: {e}. Will proceed to treat as string query.")
+            # Let it fall through; if it's not a valid file path or causes OS error, it will be treated as a regular string query.
+        except Exception as e: # Catch any other unexpected error during path processing
+            logger.warning(f"Unexpected error while checking if query '{args.query}' is a file path: {e}. Will proceed to treat as string query.")
+
+
     # These parser.error() calls will now go through CustomArgumentParser.error()
+    # This 'if args.query:' will now only be true if:
+    # 1. The query was not a file.
+    # 2. The query was a file, but --from-file was also specified (which would have errored above).
+    # 3. An unexpected error occurred while checking if the query was a file.
     if args.query:
         if args.artist is not None or args.album is not None:
             parser.error("Cannot use 'query' argument with --artist or --album.")
