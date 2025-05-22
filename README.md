@@ -28,12 +28,19 @@ A desktop application to search for and download album art from various online m
 
 ## Installation
 
-???
+### Windows
+
+Head to the [Releases page](https://github.com/fiso64/cover-fetcher/releases).
+
+### Linux and macOS
+
+Pre-built applications are not currently available. Please see the "Run from Source" section.
 
 ## Usage
 
 ### GUI
 
+After installation, run the executable. If you built from source, run:
 ```bash
 python main.py
 ```
@@ -52,6 +59,10 @@ Enter artist/album, select services, and click "Search".
 ### Command-Line
 
 ```bash
+# If using the executable:
+CoverFetcher.exe [OPTIONS] [query]
+
+# If running from source:
 python main.py [OPTIONS] [query]
 ```
 **Key Options:**
@@ -63,15 +74,49 @@ python main.py [OPTIONS] [query]
 *   `--no-save-prompt`: Save images directly without a dialog.
 *   `--exit-on-download`: Exit after a successful download.
 
-**Example:**
+**Example (running from source):**
 ```bash
 python main.py --from-file "song.flac" --min-width 600 --no-save-prompt
 ```
-For a full list of CLI options: `python main.py --help`
+For a full list of CLI options: `python main.py --help` (or `CoverFetcher.exe --help`)
 
 ## Configuration
 
-User preferences (like API keys, theme, default paths) are stored in `config.json`.
-*   Location: `~/.config/cover_fetcher/config.json`
-
+User preferences (like API keys, theme, default paths) are stored in `~/.config/cover_fetcher/config.json`
 Most settings can be configured through the application's Settings dialog (⚙ icon or `Ctrl+P`).
+
+## Run from Source
+
+1.  **Prerequisites:**
+    *   Python
+
+2.  **Clone the Repository:**
+    ```bash
+    git clone https://github.com/fiso64/cover-fetcher.git
+    cd cover-fetcher
+    ```
+
+3.  **Create and Activate a Virtual Environment (Recommended):**
+    ```bash
+    # For Linux/macOS
+    python3 -m venv venv
+    source venv/bin/activate
+
+    # For Windows (cmd.exe)
+    python -m venv venv
+    venv\Scripts\activate.bat
+
+    # For Windows (PowerShell)
+    python -m venv venv
+    .\venv\Scripts\Activate.ps1
+    ```
+
+4.  **Install Dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+5.  **Run the Application:**
+    ```bash
+    python main.py
+    ```
