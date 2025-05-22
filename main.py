@@ -76,14 +76,55 @@ def main():
     # _initialize_configs_and_globals() is called at module level in utils.config
     # This populates global USER_CONFIG from file initially.
 
-    # Check for configuration loading errors after app object might be created for QMessageBox
-    # We will show this message after QApplication is initialized.
-    initial_config_errors = get_initial_config_loading_errors()
+    is_console_mode = False
+
+    if sys.stdout and sys.stdout.isatty():
+        is_console_mode = True
+        logger.info("Console mode detected (stdout is a TTY).")
+    else:
+        logger.info("GUI mode detected (stdout is not a TTY).")
 
     # Process CLI arguments using the dedicated function
     # USER_CONFIG and DEFAULT_CONFIG are globally available from utils.config
-    initial_ui_config, perform_auto_search, initial_search_payload_for_worker = \
-        process_cli_arguments(USER_CONFIG, DEFAULT_CONFIG)
+    initial_ui_config, perform_auto_search, initial_search_payload_for_worker, \
+    cli_error_message, help_arg_definitions = \
+        process_cli_arguments(USER_CONFIG, DEFAULT_CONFIG, is_console_mode)
+
+    # Handle CLI parsing results: error, help, or proceed
+    if cli_error_message:
+        if not is_console_mode:
+            # Need QApplication to show QMessageBox
+            # Minimal app setup for error dialog
+            pre_app = QApplication.instance()
+            if not pre_app: pre_app = QApplication(sys.argv)
+            QMessageBox.critical(None, "Argument Error", cli_error_message)
+        # In console mode, error was already printed and exited by CustomArgumentParser
+        sys.exit(1)
+
+    if help_arg_definitions:
+        if not is_console_mode:
+            # Need QApplication for HelpDialog
+            pre_app = QApplication.instance()
+            if not pre_app: pre_app = QApplication(sys.argv)
+            initial_theme = USER_CONFIG.get("theme", DEFAULT_CONFIG.get("theme", "auto")) 
+            apply_app_theme_and_custom_styles(initial_theme, use_cache=True)
+            # Import HelpDialog locally to avoid circular dependencies or premature Qt imports
+            from ui.help_dialog import HelpDialog 
+            dialog = HelpDialog(help_arg_definitions)
+            dialog.exec()
+        # In console mode, help was already printed and exited by CustomArgumentParser
+        sys.exit(0)
+
+    # If initial_ui_config is None here, it means CLI processing signaled an exit handled above.
+    # This check is mostly a safeguard; previous blocks should have sys.exit().
+    if initial_ui_config is None:
+        logger.error("initial_ui_config is None after CLI processing without error/help signal. Exiting.")
+        sys.exit(1)
+
+
+    # Check for configuration loading errors after app object might be created for QMessageBox
+    # We will show this message after QApplication is initialized.
+    initial_config_errors = get_initial_config_loading_errors()
 
     # Set the global exception handler
     sys.excepthook = handle_global_exception

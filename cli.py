@@ -7,7 +7,7 @@ import sys
 import traceback # For formatting exceptions, if any part of CLI needs detailed error logging
 import tempfile # For saving embedded art
 import os # For working with temporary file paths
-from typing import Optional, Tuple, Any, TYPE_CHECKING
+from typing import Optional, Tuple, Any, TYPE_CHECKING, List, Dict
 
 # Conditional import for type hinting CMD_Search, and actual import later
 if TYPE_CHECKING:
@@ -15,45 +15,137 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Single source of truth for CLI argument definitions
+# Each entry is a tuple: (list_of_flags_or_name, options_dictionary)
+# 'dest' is only specified in options_dictionary if it differs from what argparse infers.
+ARG_DEFINITIONS: List[Tuple[List[str], Dict[str, Any]]] = [
+    (["-r", "--artist"],        {"type": str, "help": "Start a search with album artist"}),
+    (["-a", "--album"],         {"type": str, "help": "Start a search with album title (required if --artist is provided)"}),
+    (["query"],                 {"nargs": '?', "type": str, "help": "Album name or 'Artist - Album' format (instead of --artist and --album)"}),
+    (["--front-only"],          {"action": "store_true", "help": "Only search for front cover images"}),
+    (["--no-front-only"],       {"action": "store_true", "help": "Search for all image types (disable front-only mode)"}),
+    (["--services"],            {"type": str, "help": "Comma-separated list of services to enable (e.g. 'bandcamp,last.fm'). Order matters."}),
+    (["-o", "--output-dir"],    {"type": str, "help": "Set default output directory for saving images"}),
+    (["-f", "--filename"],      {"type": str, "help": "Set default filename (without extension) for saved images"}),
+    (["-y", "--no-save-prompt"],{"action": "store_true", "help": "Save images directly to output dir without showing file dialog"}),
+    (["--exit-on-download"],    {"action": "store_true", "help": "Exit application after successfully downloading an image"}),
+    (["-i", "--from-file"],     {
+                                    "type": str,
+                                    "help": "Extracts information from a music file. "
+                                            "Artist/Album: Populated from metadata if --artist/--album are not specified. If --artist=\"\" or --album=\"\" is given, "
+                                            "those will be used (effectively disabling metadata extraction for that field). An album name is still required for a search. "
+                                            "Output Directory: Set to the file's parent if --output-dir is not specified. "
+                                            "Min Width/Height: If a local cover is found and --min-width/--min-height are not explicitly set, "
+                                            "they will be derived from the existing art's dimensions, aiming to find a strictly larger image. "
+                                            "Explicit CLI arguments (e.g., --artist \"A\", --output-dir /p, --min-width 500) always take precedence."
+                                }),
+    (["--batch-size"],          {"type": int, "help": "Number of potential images to fetch and process per service in each batch (e.g., 5)"}),
+    (["--min-width"],           {"type": int, "help": "Minimum width for downloaded images (pixels)"}),
+    (["--min-height"],          {"type": int, "help": "Minimum height for downloaded images (pixels)"}),
+    (["--existing-art-path"],   {"type": str, "help": "Path to an existing album art image to display initially."}),
+]
 
-def _parse_arguments() -> Tuple[argparse.Namespace, argparse.ArgumentParser]:
-    """Parses command-line arguments using argparse."""
-    parser = argparse.ArgumentParser(description="Cover Fetcher")
-    parser.add_argument("-r", "--artist", type=str, help="Start a search with album artist")
-    parser.add_argument("-a", "--album", type=str, help="Start a search with album title (required if --artist is provided)")
-    parser.add_argument("query", nargs='?', type=str,
-                       help="Album name or 'Artist - Album' format (instead of --artist and --album)")
-    parser.add_argument("--front-only", action="store_true",
-                       help="Only search for front cover images")
-    parser.add_argument("--no-front-only", action="store_true",
-                       help="Search for all image types (disable front-only mode)")
-    parser.add_argument("--services", type=str,
-                       help="Comma-separated list of services to enable (e.g. 'bandcamp,last.fm'). Order matters.")
-    parser.add_argument("-o", "--output-dir", type=str,
-                       help="Set default output directory for saving images")
-    parser.add_argument("-f", "--filename", type=str,
-                       help="Set default filename (without extension) for saved images")
-    parser.add_argument("-y", "--no-save-prompt", action="store_true",
-                       help="Save images directly to output dir without showing file dialog")
-    parser.add_argument("--exit-on-download", action="store_true",
-                       help="Exit application after successfully downloading an image")
-    parser.add_argument("-i", "--from-file", type=str,
-                       help="Extracts information from a music file. "
-                            "Artist/Album: Populated from metadata if --artist/--album are not specified. If --artist=\"\" or --album=\"\" is given, "
-                            "those will be used (effectively disabling metadata extraction for that field). An album name is still required for a search. "
-                            "Output Directory: Set to the file's parent if --output-dir is not specified. "
-                            "Min Width/Height: If a local cover is found and --min-width/--min-height are not explicitly set, "
-                            "they will be derived from the existing art's dimensions, aiming to find a strictly larger image. "
-                            "Explicit CLI arguments (e.g., --artist \"A\", --output-dir /p, --min-width 500) always take precedence.")
-    parser.add_argument("--batch-size", type=int,
-                       help="Number of potential images to fetch and process per service in each batch (e.g., 5)")
-    parser.add_argument("--min-width", type=int, help="Minimum width for downloaded images (pixels)")
-    parser.add_argument("--min-height", type=int, help="Minimum height for downloaded images (pixels)")
-    parser.add_argument("--existing-art-path", type=str,
-                        help="Path to an existing album art image to display initially.")
-    args = parser.parse_args()
+class ArgumentParserError(Exception):
+    """Custom exception for parsing errors when GUI is active."""
+    pass
+
+class ArgumentParserHelpRequested(Exception):
+    """Custom exception for when help is requested and GUI is active."""
+    def __init__(self, arg_definitions: List[Tuple[List[str], Dict[str, Any]]]):
+        super().__init__("Help requested")
+        self.arg_definitions = arg_definitions
+
+class CustomArgumentParser(argparse.ArgumentParser):
+    def __init__(self, *args, is_console_mode: bool = False, **kwargs):
+        self.is_console_mode = is_console_mode
+        # The 'add_help' argument is expected to be in kwargs,
+        # passed from the instantiation site in _parse_arguments.
+        # Its value will be `is_console_mode`.
+        super().__init__(*args, **kwargs)
+
+
+    def error(self, message: str):
+        if self.is_console_mode:
+            # Replicates default behavior more closely for console
+            self.print_usage(sys.stderr)
+            args = {'prog': self.prog, 'message': message}
+            self.exit(2, '%(prog)s: error: %(message)s\n' % args)
+        else:
+            raise ArgumentParserError(message)
+
+    # Override _print_message to suppress output if not in console mode for help text
+    def _print_message(self, message: str, file = None):
+        if self.is_console_mode:
+            super()._print_message(message, file)
+        # else: suppress message printing for GUI mode, it will be in dialog
+
+    def exit(self, status: int = 0, message: Optional[str] = None):
+        if message:
+            self._print_message(message, sys.stderr) # prints if console_mode
+        
+        if self.is_console_mode:
+            sys.exit(status)
+        else:
+            # In GUI mode, argparse calls exit() after print_help() for -h or --help.
+            # Since we've (conditionally) suppressed print_help via _print_message,
+            # and we pre-check for -h/--help in _parse_arguments,
+            # this path signals that help was requested and successfully processed by argparse.
+            # We re-raise our custom help exception here to be caught by _parse_arguments.
+            # This ensures flow control passes back correctly.
+            # This will only be hit if our pre-check didn't catch -h/--help for some reason
+            # AND add_help was True in constructor (which it is not anymore).
+            # For safety, if this is ever reached in GUI mode, assume help or unhandled exit.
+            # However, with add_help=False and pre-checking, this shouldn't be hit by -h/--help.
+            # It might be hit by other actions like --version if we added it.
+            # For now, this acts as a fallback.
+            # If we are here, it's an exit not due to parser.error()
+            if status == 0: # Potentially help/version
+                 raise ArgumentParserHelpRequested(ARG_DEFINITIONS)
+            else: # Potentially an error that bypassed .error()
+                 raise ArgumentParserError(message or "Argument parsing caused an exit.")
+
+
+def _parse_arguments(is_console_mode: bool) -> Tuple[argparse.Namespace, argparse.ArgumentParser]:
+    """
+    Parses command-line arguments using CustomArgumentParser.
+    Raises ArgumentParserError for parsing errors in GUI mode.
+    Raises ArgumentParserHelpRequested for help requests in GUI mode.
+    """
+    # Explicitly check for help arguments before initializing the full parser
+    # This allows us to trigger our custom help dialog without argparse intervening too much.
+    if not is_console_mode and ('-h' in sys.argv or '--help' in sys.argv):
+        raise ArgumentParserHelpRequested(ARG_DEFINITIONS)
+
+    parser = CustomArgumentParser(
+        description="Cover Fetcher",
+        is_console_mode=is_console_mode,
+        # add_help is True if console_mode, so std help prints. False if GUI, so we can show dialog.
+        add_help=is_console_mode 
+    )
+
+    for flags_or_name, options_dict in ARG_DEFINITIONS:
+        parser.add_argument(*flags_or_name, **options_dict)
+
+    try:
+        args = parser.parse_args()
+    except ArgumentParserError: # Already handled by CustomArgumentParser.error
+        raise
+    except ArgumentParserHelpRequested: # Already handled by CustomArgumentParser.exit (less likely now)
+        raise
+    except Exception as e: # Catch other potential argparse issues
+        if not is_console_mode:
+            raise ArgumentParserError(f"Failed to parse arguments: {e}")
+        else:
+            # Let default argparse error handling take over or re-raise
+            # For console mode, parser.error would have exited, so this is unusual
+            # Re-raise to ensure console sees it if it's not an SystemExit
+            if not isinstance(e, SystemExit): 
+                parser.error(f"Unexpected parsing error: {e}") # This will use CustomAP.error
+            raise # If SystemExit, let it propagate
+
 
     # --- Argument Validation / Post-processing not directly tied to config modification or from_file ---
+    # These parser.error() calls will now go through CustomArgumentParser.error()
     if args.query:
         if args.artist is not None or args.album is not None:
             parser.error("Cannot use 'query' argument with --artist or --album.")
@@ -71,7 +163,7 @@ def _parse_arguments() -> Tuple[argparse.Namespace, argparse.ArgumentParser]:
     if args.front_only and args.no_front_only:
         parser.error("Cannot specify both --front-only and --no-front-only")
     
-    return args, parser
+    return args, parser # Parser instance might still be useful for _apply_general_cli_overrides error reporting
 
 
 def _apply_general_cli_overrides(
@@ -367,28 +459,46 @@ def _prepare_auto_search_payload(
 
 def process_cli_arguments(
     user_config_base: dict,
-    default_config_base: dict
-) -> Tuple[dict, bool, Optional["CMD_Search"]]:
+    default_config_base: dict,
+    is_console_mode: bool
+) -> Tuple[Optional[dict], bool, Optional["CMD_Search"], Optional[str], Optional[List[Tuple[List[str], Dict[str, Any]]]]]:
     """
     Parses CLI arguments, applies them to a copy of user_config_base,
     and determines if an initial search should be performed.
 
+    Catches ArgumentParserError and ArgumentParserHelpRequested from _parse_arguments.
+
     Returns:
         A tuple containing:
-        - initial_ui_config (dict): The configuration with CLI overrides.
+        - initial_ui_config (Optional[dict]): Config with CLI overrides, or None on CLI error/help.
         - perform_auto_search (bool): True if an auto-search should be launched.
-        - initial_search_payload (Optional["CMD_Search"]): The payload for the auto-search, or None.
+        - initial_search_payload (Optional["CMD_Search"]): Payload for auto-search, or None.
+        - cli_error_message (Optional[str]): Error message if parsing failed (for GUI dialog).
+        - help_arg_definitions (Optional[List[Dict]]): Arg definitions for custom help dialog, if help requested.
     """
-    args, parser = _parse_arguments()
+    try:
+        args, parser = _parse_arguments(is_console_mode=is_console_mode)
+    except ArgumentParserError as e:
+        # In console mode, CustomArgumentParser.error would have already exited.
+        # This catch is primarily for GUI mode.
+        logger.error(f"CLI Argument Parsing Error: {e}")
+        return None, False, None, str(e), None
+    except ArgumentParserHelpRequested as e:
+        # In console mode, help is printed and exited by CustomArgumentParser.
+        # This catch is for GUI mode to show the custom help dialog.
+        logger.info("CLI Help Requested (GUI mode).")
+        return None, False, None, None, e.arg_definitions
+    
+    # --- At this point, argument parsing was successful ---
 
     # Handle --from-file logic (modifies args in-place with extracted data)
-    # This needs to happen before general overrides so args.output_dir, args.existing_art_path etc. are populated if needed.
-    _handle_from_file_logic(args, parser)
+    _handle_from_file_logic(args, parser) # parser is passed for its .error() method
 
     # Prepare initial UI configuration by deep copying the user's base configuration
     initial_ui_config = copy.deepcopy(user_config_base)
 
     # Apply general CLI overrides to the initial_ui_config, using default_config_base for reference
+    # parser is passed for its .error() method, which now uses CustomArgumentParser's logic
     _apply_general_cli_overrides(args, initial_ui_config, default_config_base, parser)
 
     # Determine if an auto-search should be performed based on the presence of album info
@@ -401,4 +511,4 @@ def process_cli_arguments(
             perform_auto_search = False 
             logger.error("Auto-search was indicated but payload preparation failed.")
         
-    return initial_ui_config, perform_auto_search, initial_search_payload
+    return initial_ui_config, perform_auto_search, initial_search_payload, None, None
