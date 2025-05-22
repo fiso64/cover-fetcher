@@ -1,0 +1,376 @@
+import logging
+import requests
+import re
+from typing import List, Optional, Tuple, Dict, Any
+import threading
+
+from .base_retriever import AbstractImageRetriever, AlbumCandidate, PotentialImage, ImageResult
+from utils.config import DEFAULT_REQUESTS_HEADERS, USER_CONFIG
+
+logger = logging.getLogger(__name__)
+
+class LastFmApiRetriever(AbstractImageRetriever):
+    service_name = "Last.fm (API)"
+    api_base_url = "https://ws.audioscrobbler.com/2.0/"
+
+    def __init__(self):
+        super().__init__()
+        self.api_key = USER_CONFIG.get("lastfm_key")
+        if not self.api_key:
+            logger.warning(f"[{self.service_name}] API key 'lastfm_key' not found in USER_CONFIG. Last.fm functionality will be significantly limited or disabled.")
+        # Regex to identify and transform Fastly image URLs
+        self.fastly_url_pattern = re.compile(r"^(https://lastfm\.freetls\.fastly\.net/i/u/)(?:[^/]+|ar0)/(.*)$")
+
+    def _make_api_request(self, method: str, params: Dict[str, Any], 
+                          cancel_event: Optional[threading.Event] = None) -> Optional[Dict[str, Any]]:
+        if not self.api_key:
+            logger.debug(f"[{self.service_name}] API key not configured, cannot make request for method {method}.")
+            return None
+        
+        if self._check_cancelled(cancel_event, f"before making API request {method}"):
+            return None
+
+        base_params = {
+            'method': method,
+            'api_key': self.api_key,
+            'format': 'json',
+        }
+        all_params = {**base_params, **params}
+        
+        request_url = self.api_base_url 
+        
+        try:
+            response = requests.get(request_url, params=all_params, headers=DEFAULT_REQUESTS_HEADERS, timeout=15)
+            response.raise_for_status()
+            
+            data = response.json()
+            print(data)
+
+            if 'error' in data:
+                error_code = data.get('error')
+                error_message = data.get('message', 'Unknown API error')
+                if error_code == 6: 
+                     logger.info(f"[{self.service_name}] API reported error (likely no results/invalid params) for {method} (Params: {params}): {error_code} - {error_message}")
+                else:
+                     logger.error(f"[{self.service_name}] API error for method {method} (Params: {params}): {error_code} - {error_message}")
+                return None
+            return data
+
+        except requests.exceptions.HTTPError as e:
+            if not self._check_cancelled(cancel_event, f"in HTTPError handler for {method}"):
+                log_params = {k: v for k, v in params.items() if k != 'api_key'} 
+                if e.response.status_code == 404:
+                    logger.info(f"[{self.service_name}] Resource not found (HTTP 404) for API method {method} with params {log_params}")
+                else:
+                    logger.error(f"[{self.service_name}] HTTP error for API method {method} with params {log_params}: {e.response.status_code} {e.response.reason}. Response: {e.response.text[:200]}")
+            return None
+        except requests.exceptions.JSONDecodeError as e_json:
+            if not self._check_cancelled(cancel_event, f"in JSONDecodeError handler for {method}"):
+                response_text_snippet = response.text[:200] if response and hasattr(response, 'text') else "N/A"
+                logger.error(f"[{self.service_name}] Failed to decode JSON response for API method {method}: {e_json}. Response snippet: {response_text_snippet}")
+            return None
+        except requests.exceptions.RequestException as e_req:
+            if not self._check_cancelled(cancel_event, f"in RequestException handler for {method}"):
+                logger.error(f"[{self.service_name}] Request failed for API method {method}: {e_req}")
+            return None
+        except Exception as e_gen: 
+            if not self._check_cancelled(cancel_event, f"in generic exception handler for _make_api_request({method})"):
+                 logger.error(f"[{self.service_name}] Generic error in _make_api_request for method {method}: {e_gen}", exc_info=True)
+            return None
+
+    def get_image_dimensions(self, image_url: str, extra_headers: Optional[dict] = None,
+                             cancel_event: Optional[threading.Event] = None) -> Tuple[Optional[int], Optional[int]]:
+        if self._check_cancelled(cancel_event, f"at start of LastFm get_image_dimensions for {image_url}"):
+            return None, None
+        return super().get_image_dimensions(image_url, extra_headers, cancel_event)
+
+    def _get_best_image_urls_from_sizes(self, sizes_list: List[Dict[str, Any]]) -> Tuple[Optional[str], Optional[str]]:
+        image_urls_by_size_name: Dict[str, str] = {}
+
+        if not isinstance(sizes_list, list):
+            sizes_list = [sizes_list] if isinstance(sizes_list, dict) else []
+
+        for size_entry in sizes_list:
+            if not isinstance(size_entry, dict): continue
+            name = size_entry.get('size') or size_entry.get('name') 
+            url = size_entry.get('#text')
+            
+            if name and url and isinstance(url, str) and url.strip():
+                image_urls_by_size_name[name.lower()] = url
+
+        full_url_pref = ['mega', 'extralarge', 'large', 'medium', 'small', '']
+        thumb_url_pref = ['large', 'medium', 'extralarge', 'small', '']
+
+        chosen_full_url: Optional[str] = None
+        for size_name in full_url_pref:
+            if size_name in image_urls_by_size_name and image_urls_by_size_name[size_name]:
+                chosen_full_url = image_urls_by_size_name[size_name]
+                break 
+        
+        # Transform chosen_full_url to point to 'o' (original) version if it's a Fastly URL
+        if chosen_full_url:
+            match = self.fastly_url_pattern.match(chosen_full_url)
+            if match:
+                # The pattern captures (base_url_prefix)(image_hash_and_extension)
+                # Example: group(1) = "https://lastfm.freetls.fastly.net/i/u/"
+                #          group(2) = "f533a042de2b63d02d76183c6dc04f6a.png"
+                original_full_url = f"{match.group(1)}o/{match.group(2)}"
+                logger.debug(f"[{self.service_name}] Transformed API full URL '{chosen_full_url}' to '{original_full_url}' for original resolution.")
+                chosen_full_url = original_full_url
+            # else: # No explicit logging needed if it doesn't match, it's not a known Fastly pattern or already custom.
+            #    logger.debug(f"[{self.service_name}] Full URL '{chosen_full_url}' did not match Fastly pattern for /o/ transformation.")
+
+
+        chosen_thumb_url: Optional[str] = None
+        for size_name in thumb_url_pref:
+            if size_name in image_urls_by_size_name and image_urls_by_size_name[size_name]:
+                chosen_thumb_url = image_urls_by_size_name[size_name]
+                break
+        
+        if not chosen_thumb_url and chosen_full_url:
+             # If no specific thumbnail, and full URL was transformed to /o/,
+             # the thumbnail will also be the /o/ URL. This is acceptable.
+             # If full URL wasn't transformed, it uses that.
+             chosen_thumb_url = chosen_full_url
+        elif not chosen_thumb_url and image_urls_by_size_name: # Last resort for thumb
+            for size_name_fallback in ['medium', 'small', 'large', 'extralarge', 'mega', '']:
+                if size_name_fallback in image_urls_by_size_name and image_urls_by_size_name[size_name_fallback]:
+                    chosen_thumb_url = image_urls_by_size_name[size_name_fallback]
+                    break
+        
+        if not chosen_full_url and chosen_thumb_url: # If full wasn't found but thumb was
+            chosen_full_url = chosen_thumb_url 
+            # And attempt transformation on this chosen_full_url again
+            match = self.fastly_url_pattern.match(chosen_full_url)
+            if match:
+                original_full_url = f"{match.group(1)}o/{match.group(2)}"
+                chosen_full_url = original_full_url
+
+
+        # If chosen_full_url is still None but there are images, pick the first one available
+        if not chosen_full_url and image_urls_by_size_name:
+            first_available_url = next(iter(image_urls_by_size_name.values()), None)
+            if first_available_url:
+                chosen_full_url = first_available_url
+                match = self.fastly_url_pattern.match(chosen_full_url)
+                if match: # Transform if possible
+                    chosen_full_url = f"{match.group(1)}o/{match.group(2)}"
+                if not chosen_thumb_url: # If thumb also wasn't set
+                    chosen_thumb_url = first_available_url # Use the non-transformed version for thumb here
+
+        return chosen_full_url, chosen_thumb_url
+
+
+    def search_album_candidates(self, artist: str, album: str, 
+                                cancel_event: Optional[threading.Event] = None) -> List[AlbumCandidate]:
+        if not self.api_key: return []
+        if self._check_cancelled(cancel_event, "before starting search_album_candidates"): return []
+        
+        logger.info(f"[{self.service_name}] Searching for album candidates (API): '{album}' by '{artist}'")
+
+        search_album_term = album.strip() if album else ""
+        search_artist_term = artist.strip() if artist else ""
+        api_params: Dict[str, Any] = {}
+        
+        if not search_album_term and not search_artist_term:
+            logger.warning(f"[{self.service_name}] Both artist and album are empty. Cannot search.")
+            return []
+        
+        if search_album_term:
+            api_params['album'] = search_album_term
+            if search_artist_term: 
+                api_params['artist'] = search_artist_term
+        elif search_artist_term:
+            api_params['album'] = search_artist_term
+        
+        api_params['limit'] = 50 
+
+        if 'album' not in api_params:
+            logger.error(f"[{self.service_name}] Internal logic error: effective album search term is empty.")
+            return []
+
+        logger.debug(f"[{self.service_name}] Calling Last.fm API 'album.search' with params: {api_params}")
+        response_data = self._make_api_request('album.search', api_params, cancel_event)
+
+        if self._check_cancelled(cancel_event, "after Last.fm API 'album.search' call"): return []
+        
+        if not response_data or 'results' not in response_data or \
+           'albummatches' not in response_data['results'] or \
+           'album' not in response_data['results']['albummatches']:
+            logger.info(f"[{self.service_name}] No album candidates found or malformed API response for query: {api_params}")
+            return []
+
+        api_albums_data = response_data['results']['albummatches']['album']
+        if not api_albums_data: 
+            logger.info(f"[{self.service_name}] 'album' list is empty in API response for query: {api_params}")
+            return []
+        if not isinstance(api_albums_data, list): api_albums_data = [api_albums_data]
+
+        raw_potential_matches_data = []
+        for api_album in api_albums_data:
+            if self._check_cancelled(cancel_event, "in API album results loop"): break
+            if not isinstance(api_album, dict):
+                logger.debug(f"[{self.service_name}] Skipping non-dict item in API album results: {api_album}")
+                continue
+
+            album_name_api = api_album.get('name')
+            artist_data_api = api_album.get('artist')
+            album_url_api = api_album.get('url')
+            mbid_api = api_album.get('mbid')
+            image_list_api = api_album.get('image') 
+
+            artist_name_api: Optional[str] = None
+            if isinstance(artist_data_api, dict): artist_name_api = artist_data_api.get('name')
+            elif isinstance(artist_data_api, str): artist_name_api = artist_data_api
+
+            if not all([album_name_api, artist_name_api, album_url_api]):
+                logger.debug(f"[{self.service_name}] Skipping API album result due to missing critical data (name, artist, or url): {api_album}")
+                continue
+            
+            s_full_url, s_thumb_url = (None, None)
+            if image_list_api: # image_list_api can be a single dict or list of dicts
+                s_full_url, s_thumb_url = self._get_best_image_urls_from_sizes(image_list_api)
+
+
+            raw_potential_matches_data.append({
+                "link": album_url_api, 
+                "original_album_text": album_name_api,
+                "original_artist_text": artist_name_api,
+                "mbid": mbid_api,
+                "search_image_full_url": s_full_url,
+                "search_image_thumb_url": s_thumb_url
+            })
+        
+        if self._check_cancelled(cancel_event, "after processing API album results, before sorting"): return []
+
+        norm_album_query = re.sub(r'[^\w\s-]', ' ', search_album_term, flags=re.UNICODE).strip().lower() if search_album_term else ""
+        norm_artist_query = re.sub(r'[^\w\s-]', ' ', search_artist_term, flags=re.UNICODE).strip().lower() if search_artist_term else ""
+
+        priority1_candidates: List[AlbumCandidate] = []
+        priority2_candidates: List[AlbumCandidate] = []
+        priority3_candidates: List[AlbumCandidate] = []
+        processed_links = set()
+
+        def create_candidate(item_data: Dict[str, Any]) -> AlbumCandidate:
+            return AlbumCandidate(
+                identifier=item_data["link"], 
+                album_name=item_data["original_album_text"],
+                artist_name=item_data["original_artist_text"],
+                source_service=self.service_name,
+                extra_data={ 
+                    "mbid": item_data.get("mbid"),
+                    "original_album_text_api": item_data["original_album_text"], 
+                    "original_artist_text_api": item_data["original_artist_text"],
+                    "search_image_full_url": item_data.get("search_image_full_url"),
+                    "search_image_thumb_url": item_data.get("search_image_thumb_url")
+                }
+            )
+        
+        if norm_album_query and norm_artist_query:
+            for item in raw_potential_matches_data:
+                if self._check_cancelled(cancel_event, "during P1 candidate filtering"): break
+                item_album_norm = re.sub(r'[^\w\s-]', ' ', item["original_album_text"], flags=re.UNICODE).strip().lower()
+                item_artist_norm = re.sub(r'[^\w\s-]', ' ', item["original_artist_text"], flags=re.UNICODE).strip().lower()
+
+                if item_album_norm == norm_album_query and item_artist_norm == norm_artist_query:
+                    if item["link"] not in processed_links:
+                        priority1_candidates.append(create_candidate(item))
+                        processed_links.add(item["link"])
+            if self._check_cancelled(cancel_event, "after P1 candidate filtering"): return []
+        
+        if norm_album_query:
+            for item in raw_potential_matches_data:
+                if self._check_cancelled(cancel_event, "during P2 candidate filtering"): break
+                item_album_norm = re.sub(r'[^\w\s-]', ' ', item["original_album_text"], flags=re.UNICODE).strip().lower()
+                item_artist_norm = re.sub(r'[^\w\s-]', ' ', item["original_artist_text"], flags=re.UNICODE).strip().lower()
+                
+                if item_album_norm == norm_album_query:
+                    if item["link"] not in processed_links:
+                        if not norm_artist_query or item_artist_norm == norm_artist_query:
+                            priority2_candidates.append(create_candidate(item))
+                            processed_links.add(item["link"])
+            if self._check_cancelled(cancel_event, "after P2 candidate filtering"): return []
+        
+        for item in raw_potential_matches_data:
+            if self._check_cancelled(cancel_event, "during P3 candidate filtering"): break
+            if item["link"] not in processed_links:
+                priority3_candidates.append(create_candidate(item))
+                processed_links.add(item["link"])
+        if self._check_cancelled(cancel_event, "after P3 candidate filtering"): return []
+        
+        all_candidates = priority1_candidates + priority2_candidates + priority3_candidates
+        
+        if not all_candidates:
+            logger.info(f"[{self.service_name}] No suitable album candidates identified after API search and filtering for query: {api_params}.")
+        else:
+            logger.info(f"[{self.service_name}] Found {len(all_candidates)} potential album candidates via API for query: {api_params}, ordered by relevance.")
+        return all_candidates
+
+    def list_potential_images(self, candidate: AlbumCandidate, 
+                              cancel_event: Optional[threading.Event] = None) -> List[PotentialImage]:
+        if not self.api_key: return []
+        if not isinstance(candidate, AlbumCandidate) or candidate.source_service != self.service_name:
+            logger.error(f"[{self.service_name}] Invalid or non-Last.fm candidate provided to list_potential_images: {candidate}")
+            return []
+        if self._check_cancelled(cancel_event, "before starting list_potential_images"):
+            return []
+
+        logger.info(f"[{self.service_name}] Listing potential images from search data for candidate: '{candidate.album_name}' by '{candidate.artist_name}'")
+
+        full_image_url = candidate.extra_data.get("search_image_full_url")
+        thumb_image_url = candidate.extra_data.get("search_image_thumb_url")
+
+        collected_potential_images: List[PotentialImage] = []
+
+        if full_image_url and isinstance(full_image_url, str):
+            effective_thumb_url = thumb_image_url if thumb_image_url and isinstance(thumb_image_url, str) else full_image_url
+            
+            potential_img = PotentialImage(
+                identifier=full_image_url,
+                thumbnail_url=effective_thumb_url,
+                full_image_url=full_image_url,
+                source_candidate=candidate,
+                extra_data={'source_method': 'album.search_result'} 
+            )
+            collected_potential_images.append(potential_img)
+            logger.debug(f"[{self.service_name}] Created PotentialImage for '{candidate.album_name}' from search result: Full='{full_image_url}', Thumb='{effective_thumb_url}'")
+        else:
+            logger.debug(f"[{self.service_name}] No image URL found in search candidate data for '{candidate.album_name}'.")
+            
+        if self._check_cancelled(cancel_event, "after processing candidate image data"):
+            return []
+            
+        count = len(collected_potential_images)
+        logger.info(f"[{self.service_name}] Found {count} potential image(s) from search data for candidate '{candidate.album_name}'.")
+        return collected_potential_images
+
+    def resolve_image_details(self, potential_image: PotentialImage, 
+                              cancel_event: Optional[threading.Event] = None) -> Optional[ImageResult]:
+        if not self.api_key: return None
+        if not isinstance(potential_image, PotentialImage) or potential_image.source_candidate.source_service != self.service_name:
+            logger.error(f"[{self.service_name}] Invalid or non-Last.fm PotentialImage provided to resolve_image_details: {potential_image}")
+            return None
+        if self._check_cancelled(cancel_event, "before starting resolve_image_details"):
+            return None
+
+        logger.debug(f"[{self.service_name}] Resolving details for image: {potential_image.full_image_url}")
+        
+        width, height = self.get_image_dimensions(potential_image.full_image_url,
+                                                  cancel_event=cancel_event)
+
+        if self._check_cancelled(cancel_event, f"after get_image_dimensions for {potential_image.full_image_url}"):
+            return None
+
+        if width and height:
+            logger.debug(f"[{self.service_name}] Successfully resolved dimensions for {potential_image.full_image_url}: {width}x{height}")
+            # is_front will be taken from potential_image.is_front (defaults to True if not set)
+            # album_name, artist_name, original_type will be taken from potential_image (defaults to None if not set)
+            return ImageResult.from_potential_image(
+                potential_image=potential_image,
+                full_width=width,
+                full_height=height
+            )
+        else:
+            if not self._check_cancelled(cancel_event, "at end of resolve_image_details (failed to get dimensions)"):
+                logger.warning(f"[{self.service_name}] Could not get dimensions for Last.fm image: {potential_image.full_image_url}.")
+            return None

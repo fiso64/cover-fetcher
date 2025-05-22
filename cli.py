@@ -1,0 +1,404 @@
+# cli.py
+import argparse
+import copy # For deepcopy
+import logging
+import pathlib
+import sys
+import traceback # For formatting exceptions, if any part of CLI needs detailed error logging
+import tempfile # For saving embedded art
+import os # For working with temporary file paths
+from typing import Optional, Tuple, Any, TYPE_CHECKING
+
+# Conditional import for type hinting CMD_Search, and actual import later
+if TYPE_CHECKING:
+    from services.worker import CMD_Search # Assuming CMD_Search is in services.worker
+
+logger = logging.getLogger(__name__)
+
+
+def _parse_arguments() -> Tuple[argparse.Namespace, argparse.ArgumentParser]:
+    """Parses command-line arguments using argparse."""
+    parser = argparse.ArgumentParser(description="Cover Fetcher")
+    parser.add_argument("-r", "--artist", type=str, help="Start a search with album artist")
+    parser.add_argument("-a", "--album", type=str, help="Start a search with album title (required if --artist is provided)")
+    parser.add_argument("query", nargs='?', type=str,
+                       help="Album name or 'Artist - Album' format (instead of --artist and --album)")
+    parser.add_argument("--front-only", action="store_true",
+                       help="Only search for front cover images")
+    parser.add_argument("--no-front-only", action="store_true",
+                       help="Search for all image types (disable front-only mode)")
+    parser.add_argument("--services", type=str,
+                       help="Comma-separated list of services to enable (e.g. 'bandcamp,last.fm'). Order matters.")
+    parser.add_argument("-o", "--output-dir", type=str,
+                       help="Set default output directory for saving images")
+    parser.add_argument("-f", "--filename", type=str,
+                       help="Set default filename (without extension) for saved images")
+    parser.add_argument("-y", "--no-save-prompt", action="store_true",
+                       help="Save images directly to output dir without showing file dialog")
+    parser.add_argument("--exit-on-download", action="store_true",
+                       help="Exit application after successfully downloading an image")
+    parser.add_argument("-i", "--from-file", type=str,
+                       help="Extracts information from a music file. "
+                            "Artist/Album: Populated from metadata if --artist/--album are not specified. If --artist=\"\" or --album=\"\" is given, "
+                            "those will be used (effectively disabling metadata extraction for that field). An album name is still required for a search. "
+                            "Output Directory: Set to the file's parent if --output-dir is not specified. "
+                            "Min Width/Height: If a local cover is found and --min-width/--min-height are not explicitly set, "
+                            "they will be derived from the existing art's dimensions, aiming to find a strictly larger image. "
+                            "Explicit CLI arguments (e.g., --artist \"A\", --output-dir /p, --min-width 500) always take precedence.")
+    parser.add_argument("--batch-size", type=int,
+                       help="Number of potential images to fetch and process per service in each batch (e.g., 5)")
+    parser.add_argument("--min-width", type=int, help="Minimum width for downloaded images (pixels)")
+    parser.add_argument("--min-height", type=int, help="Minimum height for downloaded images (pixels)")
+    parser.add_argument("--existing-art-path", type=str,
+                        help="Path to an existing album art image to display initially.")
+    args = parser.parse_args()
+
+    # --- Argument Validation / Post-processing not directly tied to config modification or from_file ---
+    if args.query:
+        if args.artist is not None or args.album is not None:
+            parser.error("Cannot use 'query' argument with --artist or --album.")
+        if " - " in args.query:
+            artist, album = args.query.split(" - ", 1)
+            args.artist = artist.strip()
+            args.album = album.strip()
+        else:
+            args.album = args.query.strip()
+
+    if args.artist and not args.album: # Album might be "" if explicitly passed, which is different from None
+        if args.album is None: # If --artist is given, --album must also be given (even if empty)
+            parser.error("--album is required when --artist is provided.")
+
+    if args.front_only and args.no_front_only:
+        parser.error("Cannot specify both --front-only and --no-front-only")
+    
+    return args, parser
+
+
+def _apply_general_cli_overrides(
+    args: argparse.Namespace, 
+    initial_ui_config: dict, 
+    default_config_base: dict, 
+    parser: argparse.ArgumentParser
+) -> None:
+    """Applies general CLI arguments (not --from-file specific setup) to initial_ui_config."""
+
+    if args.existing_art_path: # This path might come from --from-file or direct --existing-art-path
+        art_path = pathlib.Path(args.existing_art_path).expanduser()
+        if art_path.is_file():
+            initial_ui_config["current_album_art_path"] = str(art_path.resolve())
+        else:
+            logger.warning(f"Specified existing art path is not a file or does not exist: {art_path}")
+            # Only error out if --existing-art-path was EXPLICITLY provided and is invalid.
+            if any(arg_part.startswith('--existing-art-path') for arg_part in sys.argv):
+                 parser.error(f"Explicitly provided --existing-art-path '{art_path}' is not a valid file.")
+
+    if args.front_only: # args.no_front_only already handled by parser mutual exclusivity in _parse_arguments
+        initial_ui_config["front_only"] = True
+    elif args.no_front_only:
+        initial_ui_config["front_only"] = False
+
+    if args.output_dir: # This dir might come from --from-file or direct --output-dir
+        output_dir_path = pathlib.Path(args.output_dir).expanduser()
+        # Allow if it's a dir OR if it doesn't exist yet (will be created on save)
+        if output_dir_path.is_dir() or not output_dir_path.exists():
+            initial_ui_config["default_output_dir"] = str(output_dir_path)
+        else: # Exists but is not a directory (e.g., it's a file)
+            logger.error(f"Invalid output directory specified (exists but is not a directory): {output_dir_path}")
+            parser.error(f"Output directory '{output_dir_path}' exists and is not a directory.")
+
+    if args.filename:
+        clean_filename = args.filename.strip()
+        if clean_filename:
+            initial_ui_config["default_filename"] = clean_filename
+        else:
+            parser.error("Empty filename specified via --filename.")
+
+    if args.no_save_prompt:
+        initial_ui_config["no_save_prompt"] = True
+
+    if args.exit_on_download:
+        initial_ui_config["exit_on_download"] = True
+
+    if args.services:
+        cli_service_names_ordered = [name.strip() for name in args.services.split(',') if name.strip()]
+        new_services_config_tuples = []
+        processed_from_cli = set()
+
+        for service_name_cli in cli_service_names_ordered:
+            found_in_default = False
+            for def_service_name, _ in default_config_base.get("services", []):
+                if def_service_name.lower() == service_name_cli.lower():
+                    if def_service_name not in processed_from_cli:
+                        new_services_config_tuples.append((def_service_name, True))
+                        processed_from_cli.add(def_service_name)
+                    found_in_default = True
+                    break
+            if not found_in_default:
+                parser.error(f"Service '{service_name_cli}' from --services is not a recognized default service.")
+        
+        for def_service_name, _ in default_config_base.get("services", []):
+            if def_service_name not in processed_from_cli:
+                new_services_config_tuples.append((def_service_name, False)) # Add remaining default services as disabled
+        
+        new_services_list_of_lists = [list(s) for s in new_services_config_tuples]
+        initial_ui_config["services"] = new_services_list_of_lists
+
+    if args.batch_size is not None:
+        if args.batch_size < 1: parser.error("--batch-size must be a positive integer.")
+        initial_ui_config["batch_size"] = args.batch_size
+
+    # min_width/min_height might be set by --from-file or directly by CLI.
+    # _handle_from_file_logic already modified args.min_width/args.min_height if needed.
+    if args.min_width is not None:
+        if args.min_width < 1: parser.error("--min-width must be a positive integer.")
+        initial_ui_config["min_width"] = args.min_width
+
+    if args.min_height is not None:
+        if args.min_height < 1: parser.error("--min-height must be a positive integer.")
+        initial_ui_config["min_height"] = args.min_height
+
+
+def _handle_from_file_logic(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    """
+    Handles all logic related to the --from-file argument.
+    Modifies `args` in-place with extracted metadata, output dir, and existing art info.
+    """
+    if not args.from_file:
+        return
+
+    file_path_obj = pathlib.Path(args.from_file).expanduser()
+    if not file_path_obj.exists():
+        parser.error(f"File not found: {file_path_obj}")
+
+    # --- Metadata Extraction (taglib) ---
+    try:
+        import taglib # Import only when needed
+        with taglib.File(str(file_path_obj)) as audio_file:
+            artist_tags = audio_file.tags.get("ALBUMARTIST", audio_file.tags.get("ARTIST", [""]))
+            album_tags = audio_file.tags.get("ALBUM", [""])
+            
+            artist_from_file = artist_tags[0] if artist_tags else ""
+            album_from_file = album_tags[0] if album_tags else ""
+
+            if args.artist is None: # Only set from file if not provided via CLI
+                args.artist = artist_from_file
+            if args.album is None: # Only set from file if not provided via CLI
+                args.album = album_from_file
+            
+            logger.info(f"After taglib processing for {file_path_obj}: Artist='{args.artist}', Album='{args.album}'")
+            
+            if args.output_dir is None: # Only set from file if not provided via CLI
+                args.output_dir = str(file_path_obj.parent)
+                logger.info(f"Set output directory from file to: {args.output_dir}")
+
+    except ImportError:
+        logger.warning("python-taglib library not found. Cannot extract metadata from music file. To enable this, 'pip install python-taglib'.")
+    except taglib.TaglibError as e:
+        logger.error(f"Error reading metadata from {file_path_obj} (taglib): {e}")
+        parser.error(f"Could not read metadata from file {file_path_obj} (taglib error).")
+    except Exception as e: # Catch other potential errors during file processing
+        logger.error(f"Error processing file metadata for {file_path_obj}: {e}\n{traceback.format_exc()}")
+        parser.error(f"Failed to process file metadata for {file_path_obj}.")
+
+    # After potential metadata extraction (even if it failed but didn't exit),
+    # ensure album (which is mandatory for search) is present if artist is.
+    # If --from-file was used, and album is still None or empty, it's an issue.
+    if args.album == "" or args.album is None: # Checking explicitly for empty string too
+        logger.error(f"Album is mandatory for a search. It was not found in metadata of '{file_path_obj}' or not acceptably provided via --album argument in conjunction with --from-file.")
+        parser.error(f"Album is mandatory. No valid album name derived from file '{file_path_obj}' or --album argument.")
+
+
+    # --- Attempt to find existing cover art (external or embedded) for --from-file ---
+    if args.existing_art_path is None: # Only try if --existing-art-path wasn't explicitly given
+        music_file_parent_dir = file_path_obj.parent
+        found_art_path_str = None
+        
+        # 1. Search for common external art files
+        pattern_bases = ["cover", "folder", "album", "front"]
+        image_extensions = [".jpg", ".jpeg", ".png"]
+        try:
+            items_in_dir = list(music_file_parent_dir.iterdir())
+            for base_name in pattern_bases:
+                if found_art_path_str: break
+                for ext in image_extensions:
+                    target_filename_lower = (base_name + ext).lower()
+                    for item in items_in_dir:
+                        if item.is_file() and item.name.lower() == target_filename_lower:
+                            found_art_path_str = str(item)
+                            logger.info(f"Found existing art (pattern match): {found_art_path_str}")
+                            break 
+                    if found_art_path_str: break
+            
+            if not found_art_path_str: # Fallback: first image file
+                for item in items_in_dir:
+                    if item.is_file() and item.suffix.lower() in image_extensions:
+                        found_art_path_str = str(item)
+                        logger.info(f"Found first available image file as existing art: {found_art_path_str}")
+                        break
+        except OSError as e:
+            logger.warning(f"Could not list directory {music_file_parent_dir} to find external art: {e}")
+
+
+        # 2. If no external art found, try to extract embedded art
+        if not found_art_path_str:
+            logger.info(f"No external art file found in {music_file_parent_dir}. Attempting to extract embedded art from {file_path_obj}.")
+            best_picture_data = None
+            best_picture_ext = ".jpg"
+            try:
+                import mutagen
+                m_file = mutagen.File(str(file_path_obj))
+                if m_file:
+                    pictures_to_check = []
+                    if m_file.pictures: pictures_to_check.extend(m_file.pictures) # FLAC, Ogg
+                    if hasattr(m_file, 'tags'): # ID3, MP4
+                        if isinstance(m_file.tags, mutagen.id3.ID3): pictures_to_check.extend(m_file.tags.getall('APIC'))
+                        elif isinstance(m_file.tags, mutagen.mp4.MP4Tags):
+                            covr_tags = m_file.tags.get('covr'); 
+                            if covr_tags: pictures_to_check.extend(covr_tags)
+                    
+                    front_cover_data, front_cover_ext, any_cover_data, any_cover_ext = None, None, None, None
+                    for pic in pictures_to_check:
+                        pic_data, pic_ext_current, pic_type = None, None, getattr(pic, 'type', 0) # type 3 is front cover
+                        
+                        if hasattr(pic, 'data'): # mutagen.flac.Picture, mutagen.id3.APIC
+                            pic_data = pic.data
+                            mime_type = getattr(pic, 'mime', '').lower()
+                            if 'jpeg' in mime_type or 'jpg' in mime_type: pic_ext_current = ".jpg"
+                            elif 'png' in mime_type: pic_ext_current = ".png"
+                        elif isinstance(pic, mutagen.mp4.MP4Cover): # mutagen.mp4.MP4Cover
+                            pic_data = bytes(pic) # Data is the object itself
+                            if pic.imageformat == mutagen.mp4.MP4Cover.FORMAT_JPEG: pic_ext_current = ".jpg"
+                            elif pic.imageformat == mutagen.mp4.MP4Cover.FORMAT_PNG: pic_ext_current = ".png"
+                        
+                        if not pic_data or not pic_ext_current: continue
+
+                        if pic_type == 3: front_cover_data, front_cover_ext = pic_data, pic_ext_current; break
+                        if any_cover_data is None: any_cover_data, any_cover_ext = pic_data, pic_ext_current
+                    
+                    if front_cover_data: best_picture_data, best_picture_ext = front_cover_data, front_cover_ext
+                    elif any_cover_data: best_picture_data, best_picture_ext = any_cover_data, any_cover_ext
+
+            except ImportError: logger.warning("Mutagen library not found. Cannot extract embedded album art. To enable this, 'pip install mutagen'.")
+            except Exception as e: logger.error(f"Error extracting embedded art using Mutagen from {file_path_obj}: {e}\n{traceback.format_exc()}")
+
+            if best_picture_data:
+                try:
+                    fd, temp_image_path = tempfile.mkstemp(suffix=best_picture_ext, prefix="aad_embedded_")
+                    with os.fdopen(fd, 'wb') as tmp_file: tmp_file.write(best_picture_data)
+                    found_art_path_str = temp_image_path
+                    logger.info(f"Successfully extracted embedded art to temporary file: {found_art_path_str}")
+                except Exception as e:
+                    logger.error(f"Failed to save extracted embedded art to temporary file: {e}\n{traceback.format_exc()}")
+                    if 'temp_image_path' in locals() and os.path.exists(temp_image_path):
+                        try: os.remove(temp_image_path)
+                        except OSError: pass
+                    found_art_path_str = None
+        
+        # 3. If art was found (external or embedded), set args.existing_art_path and try to get dimensions
+        if found_art_path_str:
+            args.existing_art_path = found_art_path_str
+            if args.min_width is None or args.min_height is None: # Only if not explicitly set by CLI
+                try:
+                    from PIL import Image # Import only when needed
+                    with Image.open(found_art_path_str) as img:
+                        img_width, img_height = img.size
+                        
+                        # Store whether CLI set these, to correctly apply +1 logic
+                        cli_set_min_width = args.min_width is not None
+                        cli_set_min_height = args.min_height is not None
+                        
+                        derived_w, derived_h = None, None
+
+                        if not cli_set_min_width:
+                            derived_w = img_width
+                            args.min_width = img_width # Temporarily assign for logic below
+                        if not cli_set_min_height:
+                            derived_h = img_height
+                            args.min_height = img_height # Temporarily assign
+
+                        # Apply +1 logic: if width was derived, increment it.
+                        # If width was CLI and height derived, increment height.
+                        if derived_w is not None: # Width was derived
+                            args.min_width = derived_w + 1
+                            logger.info(f"Set min_width to {args.min_width} (derived from existing art {derived_w}px + 1) as --min-width was not specified.")
+                            if derived_h is not None: # Height also derived, no +1 needed as width already covers "strictly better"
+                                logger.info(f"Set min_height to {args.min_height} (derived from existing art {derived_h}px) as --min-height was not specified and width was incremented.")
+                        elif derived_h is not None: # Width was CLI-set, Height was derived
+                            args.min_height = derived_h + 1
+                            logger.info(f"Set min_height to {args.min_height} (derived from existing art {derived_h}px + 1) as --min-height was not specified (and --min-width was CLI-provided).")
+                except ImportError: logger.warning("Pillow (PIL) library not found. Cannot extract dimensions from existing art. 'pip install Pillow'.")
+                except Exception as e: logger.warning(f"Could not read dimensions from existing art {found_art_path_str}: {e}")
+
+
+def _prepare_auto_search_payload(
+    args: argparse.Namespace, 
+    initial_ui_config: dict, 
+    default_config_base: dict
+) -> Optional["CMD_Search"]:
+    """Prepares the CMD_Search payload if an auto-search is indicated by args (i.e., album is present)."""
+    if not args.album: # Album (even if empty string from CLI) is the primary trigger
+        return None
+
+    # This import is late because CMD_Search might have its own dependencies
+    # that are not strictly needed if no auto-search is performed.
+    from services.worker import CMD_Search 
+
+    # Use current UI config values for the payload, falling back to defaults if not set.
+    services_cfg = initial_ui_config.get("services", default_config_base.get("services", []))
+    # Ensure services_cfg has the right format (list of tuples) for CMD_Search
+    if services_cfg and isinstance(services_cfg[0], list):
+        services_cfg_tuples = [tuple(s) for s in services_cfg]
+    else:
+        services_cfg_tuples = services_cfg # Assume it's already list of tuples or empty
+
+    batch_size = initial_ui_config.get("batch_size", default_config_base.get("batch_size", 5)) # Sensible default
+    front_only = initial_ui_config.get("front_only", default_config_base.get("front_only", True)) # Sensible default
+
+    payload = CMD_Search(
+        artist=args.artist if args.artist else "", # CMD_Search expects non-None artist
+        album=args.album, # Known to be non-None if we are in this function
+        front_only_setting=front_only,
+        active_services_config=services_cfg_tuples,
+        batch_size=batch_size
+    )
+    logger.info(f"CLI auto-search payload prepared: Artist='{payload.artist}', Album='{payload.album}'")
+    return payload
+
+
+def process_cli_arguments(
+    user_config_base: dict,
+    default_config_base: dict
+) -> Tuple[dict, bool, Optional["CMD_Search"]]:
+    """
+    Parses CLI arguments, applies them to a copy of user_config_base,
+    and determines if an initial search should be performed.
+
+    Returns:
+        A tuple containing:
+        - initial_ui_config (dict): The configuration with CLI overrides.
+        - perform_auto_search (bool): True if an auto-search should be launched.
+        - initial_search_payload (Optional["CMD_Search"]): The payload for the auto-search, or None.
+    """
+    args, parser = _parse_arguments()
+
+    # Handle --from-file logic (modifies args in-place with extracted data)
+    # This needs to happen before general overrides so args.output_dir, args.existing_art_path etc. are populated if needed.
+    _handle_from_file_logic(args, parser)
+
+    # Prepare initial UI configuration by deep copying the user's base configuration
+    initial_ui_config = copy.deepcopy(user_config_base)
+
+    # Apply general CLI overrides to the initial_ui_config, using default_config_base for reference
+    _apply_general_cli_overrides(args, initial_ui_config, default_config_base, parser)
+
+    # Determine if an auto-search should be performed based on the presence of album info
+    perform_auto_search = bool(args.album) # True if args.album is not None and not an empty string
+    
+    initial_search_payload = None
+    if perform_auto_search:
+        initial_search_payload = _prepare_auto_search_payload(args, initial_ui_config, default_config_base)
+        if initial_search_payload is None: # Should not happen if perform_auto_search is True
+            perform_auto_search = False 
+            logger.error("Auto-search was indicated but payload preparation failed.")
+        
+    return initial_ui_config, perform_auto_search, initial_search_payload

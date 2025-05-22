@@ -1,0 +1,7 @@
+.aider*
+*.pyc
+*.pyo
+__pycache__/
+.venv/
+dist_standalone/
+dist_onefile/

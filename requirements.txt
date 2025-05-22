@@ -1,0 +1,10 @@
+PySide6
+Pillow
+requests
+musicbrainzngs
+python3-discogs-client
+cloudscraper
+lxml
+pytaglib
+pyqtdarktheme-fork
+darkdetect
