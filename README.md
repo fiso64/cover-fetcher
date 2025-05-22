@@ -2,7 +2,8 @@
 
 A desktop application to search for and download album art from various online music services.
 
-<!-- ![Screenshot](assets/screenshot.png) -->
+![image](https://github.com/user-attachments/assets/0c8ddf32-52c3-4f02-88b6-bbcd8eb83aec)
+
 
 ## Features
 
