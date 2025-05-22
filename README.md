@@ -24,7 +24,7 @@ A desktop application to search for and download album art from various online m
 *   MusicBrainz
 *   VGMdb
 
-**Note for Discogs:** Using Discogs requires a Personal Access Token. Add this to your `config.json` (see Configuration section) as `discogs_token: "YOUR_TOKEN_HERE"`.
+**Note for Discogs:** Using Discogs requires a Personal Access Token. Add this to your `config.json` (at `~/.config/cover_fetcher`) as `discogs_token: "YOUR_TOKEN_HERE"`.
 
 ## Installation
 
