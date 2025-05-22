@@ -231,7 +231,7 @@ class SettingsDialog(QDialog):
 
         self.reset_button = QPushButton("Reset to Defaults")
         self.reset_button.setFont(get_font(FONT_SIZE_NORMAL))
-        self.reset_button.setToolTip("Reset all settings on this page to their default values. Does not save them.")
+        self.reset_button.setToolTip("Reset all settings on this page to their default values.")
         self.reset_button.clicked.connect(self._reset_to_defaults)
         button_layout.addWidget(self.reset_button)
         
