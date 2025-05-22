@@ -1,12 +1,11 @@
 # retrievers/vgmdb.py
 import logging
-import requests # Still needed for Response type hint and exceptions
 from lxml import html
 import urllib.parse
 import re
 from typing import List, Optional, Tuple, Dict, Any
 import threading
-# import cloudscraper # No longer imported at top-level
+import requests
 
 from .base_retriever import (
     AbstractImageRetriever, AlbumCandidate, PotentialImage, ImageResult,

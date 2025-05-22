@@ -1,9 +1,9 @@
 # services/musicbrainz.py
 import musicbrainzngs
-import requests
 import logging
 from typing import List, Optional, Dict, Any
 import threading
+import requests
 
 from .base_retriever import (
     AbstractImageRetriever, AlbumCandidate, PotentialImage, ImageResult,

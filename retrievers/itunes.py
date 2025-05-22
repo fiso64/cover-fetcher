@@ -1,9 +1,9 @@
 # services/itunes.py
-import requests
 import logging
 import re
 from typing import List, Optional, Tuple, Dict, Any
 import threading
+import requests
 
 from .base_retriever import (
     AbstractImageRetriever, AlbumCandidate, PotentialImage, ImageResult,

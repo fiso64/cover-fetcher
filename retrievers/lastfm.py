@@ -1,11 +1,11 @@
 # services/lastfm.py
 import logging
-import requests
 from lxml import html
 import urllib.parse
 import re
 from typing import List, Optional, Tuple, Dict, Any
 import threading
+import requests
 
 from .base_retriever import (
     AbstractImageRetriever, AlbumCandidate, PotentialImage, ImageResult,

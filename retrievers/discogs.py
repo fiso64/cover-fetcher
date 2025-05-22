@@ -4,6 +4,7 @@ from discogs_client.exceptions import HTTPError as DiscogsHTTPError # Alias for 
 import logging
 from typing import List, Optional, Tuple, Dict, Any
 import threading
+import requests
 
 from .base_retriever import (
     AbstractImageRetriever, AlbumCandidate, PotentialImage, ImageResult,
