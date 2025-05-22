@@ -156,3 +156,13 @@ def apply_app_theme_and_custom_styles(theme_name: str, use_cache=False):
     duration = time.time() - start_time
     logger.debug(f"Theme application took {duration:.3f} seconds")
 
+def apply_theme_tweaks_windows(main_window, theme: str):
+    theme = resolve_theme(theme)
+    if theme == "dark":
+        try:
+            import pywinstyles
+            pywinstyles.apply_style(main_window, "dark")
+        except ImportError:
+            logger.error("pywinstyles module not found. Cannot apply windows-specific theming.")
+        except Exception as e:
+            logger.error(f"Error while running pywinstyles.apply_style: {e}")

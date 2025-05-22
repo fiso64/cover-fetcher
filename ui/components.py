@@ -4,6 +4,7 @@ import uuid # For generating unique request_ids
 import pathlib
 import shiboken6
 import logging
+import sys
 from typing import List, Callable, Optional, Dict, Union, Any, Tuple, TYPE_CHECKING
 
 from PySide6.QtWidgets import (
@@ -41,6 +42,7 @@ def get_font(size=FONT_SIZE_NORMAL, weight: QFont.Weight = QFont.Weight.Normal, 
     font.setWeight(weight)
     font.setItalic(italic)
     return font
+
 
 class FlowLayout(QLayout):
     def __init__(self, parent=None, margin=0, hspacing=-1, vspacing=-1):
@@ -187,6 +189,7 @@ class FlowLayout(QLayout):
         elif isinstance(parent, QLayout): # Check if parent is QLayout
             return parent.spacing()
         return -1
+
 
 class RoundedImageDisplayWidget(QWidget):
     def __init__(self, thumbnail_render_size: QSize, parent: Optional[QWidget] = None):
@@ -1019,6 +1022,7 @@ class ScrollableImageRow(QScrollArea):
         self.scroll_animation = new_animation # Store the new animation
         self.scroll_animation.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
 
+
 class ServiceButton(QPushButton):
     def __init__(self, service_name: str, parent: Optional[QWidget] = None):
         super().__init__(service_name, parent)
@@ -1073,6 +1077,7 @@ class ServiceButton(QPushButton):
         logger.debug(f"ServiceButton: Starting drag for {self.service_name}")
         drag.exec(Qt.MoveAction) # Removed if condition as we don't do anything with result here
         self._drag_start_position = None
+
 
 class ServiceToggleButtonBar(QWidget):
     serviceToggled = Signal(str, bool)
@@ -1289,6 +1294,7 @@ class ServiceToggleButtonBar(QWidget):
     def _hide_drag_indicator(self):
         if self._drag_indicator:
             self._drag_indicator.hide()
+
 
 class ServiceImageSection(QGroupBox):
     imageDoubleClicked = Signal(object, QByteArray)

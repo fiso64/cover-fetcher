@@ -2,8 +2,7 @@
 
 A desktop application to search for and download album art from various online music services.
 
-<!-- ![Cover Fetcher Screenshot](assets/screenshot.png) -->
-<!-- TODO: Add a screenshot, e.g., at ./assets/screenshot.png -->
+<!-- ![Screenshot](assets/screenshot.png) -->
 
 ## Features
 

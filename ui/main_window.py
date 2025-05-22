@@ -6,6 +6,7 @@ import queue
 import time
 import copy
 import os
+import sys
 import pathlib
 import shiboken6
 from typing import Dict, List, Optional, Union, Tuple, Any, TYPE_CHECKING
@@ -19,7 +20,7 @@ from PySide6.QtCore import Qt, QTimer, Signal, Slot, QUrl, QByteArray, QSettings
 from PySide6.QtGui import QKeySequence, QShortcut, QDesktopServices, QFont, QFontMetrics, QPixmap, QColor, QMouseEvent # Added QPixmap, QColor, QMouseEvent
 from PySide6.QtCore import QThread, Signal
 
-from .theme_manager import apply_app_theme_and_custom_styles
+from .theme_manager import apply_app_theme_and_custom_styles, apply_theme_tweaks_windows
 from .notifications import NotificationManager, DEFAULT_TIMEOUT_MS
 from utils.config import get_user_downloads_folder, save_user_config, USER_CONFIG, DEFAULT_CONFIG
 from services.image_fetcher import ImageFetcher
@@ -350,6 +351,8 @@ class MainWindow(QMainWindow):
     def _show_settings_dialog(self):
         if self.settings_dialog is None or not self.settings_dialog.isVisible():
             self.settings_dialog = SettingsDialog(self)
+            if sys.platform == "win32":
+                apply_theme_tweaks_windows(self.settings_dialog, self.session_config.get("theme", DEFAULT_CONFIG.get("theme", "auto")))
             if self.settings_dialog.exec() == QDialog.Accepted:
                 logger.info("[GUI] Settings dialog accepted. Reloading relevant session config from USER_CONFIG.")
                 # Store old theme and thumbnail_size before updating session_config to detect change
@@ -365,6 +368,8 @@ class MainWindow(QMainWindow):
                 if old_theme != new_theme:
                     logger.info(f"[GUI] Theme changed from '{old_theme}' to '{new_theme}'. Re-applying theme and styles.")
                     apply_app_theme_and_custom_styles(new_theme)
+                    if sys.platform == "win32":
+                        apply_theme_tweaks_windows(self, new_theme)
 
                 # Re-render service sections if thumbnail size changed
                 if old_thumbnail_size != new_thumbnail_size:

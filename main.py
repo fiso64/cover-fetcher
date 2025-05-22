@@ -27,7 +27,7 @@ import traceback # For formatting exceptions
 from typing import Optional, Tuple, Any, TYPE_CHECKING
 
 from utils.config import USER_CONFIG, DEFAULT_CONFIG, USER_CONFIG_DIR, USER_CONFIG_FILE, save_user_config, get_initial_config_loading_errors
-from ui.theme_manager import apply_app_theme_and_custom_styles, resolve_theme
+from ui.theme_manager import apply_app_theme_and_custom_styles, resolve_theme, apply_theme_tweaks_windows
 from ui.main_window import MainWindow
 from utils.config import USER_CONFIG, DEFAULT_CONFIG, USER_CONFIG_DIR, USER_CONFIG_FILE, save_user_config
 from cli import process_cli_arguments
@@ -130,12 +130,7 @@ def main():
     sys.excepthook = handle_global_exception
     logger.info("Global exception handler set.")
 
-    initial_theme = initial_ui_config.get("theme", DEFAULT_CONFIG.get("theme", "auto")) 
-    needs_dark_mode = resolve_theme(initial_theme) == "dark"
-
-    start_args = sys.argv if not needs_dark_mode else sys.argv + ['-platform', 'windows:darkmode=2']
-
-    app = QApplication(start_args)
+    app = QApplication(sys.argv)
     app.setApplicationVersion("0.1")
 
     # Show configuration load errors now that QApplication exists
@@ -147,13 +142,17 @@ def main():
                             "You can review or correct settings in the Settings dialog or by editing the config file(s). "
                             "Corrupted files may have been backed up with a '.corrupted' extension.")
 
-    if needs_dark_mode: app.setStyle('Fusion') # needed to make the title bar dark
-
+    initial_theme = initial_ui_config.get("theme", DEFAULT_CONFIG.get("theme", "auto")) 
+    initial_theme = resolve_theme(initial_theme)
     apply_app_theme_and_custom_styles(initial_theme, use_cache=True)
 
     logger.info("Showing main window")
     main_window = MainWindow(initial_ui_config_from_cli=initial_ui_config,
                              initial_search_payload_for_worker=initial_search_payload_for_worker)
+
+    if sys.platform == "win32":
+        apply_theme_tweaks_windows(main_window, initial_theme)
+
     main_window.show()
 
     logger.info("Starting PySide6 event loop...")
