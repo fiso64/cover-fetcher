@@ -316,23 +316,23 @@ class MainWindow(QMainWindow):
         
         # Load and display current album art if path is provided
         if self.current_album_art_path:
-            self._load_and_display_current_album_art()
+            self._load_and_display_current_album_art(set_min_dimensions=False)
 
         # Initialize dimension filter from session_config (CLI args)
         cli_min_w = self.session_config.get("min_width")
         cli_min_h = self.session_config.get("min_height")
         initial_dims_text = ""
-        if cli_min_w is not None and cli_min_h is not None:
+        if cli_min_w is not None and cli_min_h is not None and cli_min_w > 0 and cli_min_h > 0:
             initial_dims_text = f"{cli_min_w}x{cli_min_h}"
             self.active_min_w_filter = int(cli_min_w)
             self.active_min_h_filter = int(cli_min_h)
-        elif cli_min_w is not None:
+        elif cli_min_w is not None and cli_min_w > 0:
             initial_dims_text = str(cli_min_w)
             self.active_min_w_filter = int(cli_min_w)
-        elif cli_min_h is not None: # Less common to have only height, but handle
+        elif cli_min_h is not None and cli_min_h > 0: # Less common to have only height, but handle
             initial_dims_text = f"x{cli_min_h}"
             self.active_min_h_filter = int(cli_min_h)
-        
+
         if initial_dims_text:
             self.min_dims_entry.setText(initial_dims_text)
             # _on_min_dimensions_changed will be triggered by setText if text actually changes.
@@ -1197,7 +1197,7 @@ class MainWindow(QMainWindow):
         worker_pid_info = getattr(event_obj, 'worker_pid', 'Unknown')
         logger.info(f"[GUI] Worker (PID {worker_pid_info}) confirmed shutdown.")
 
-    def _load_and_display_current_album_art(self):
+    def _load_and_display_current_album_art(self, set_min_dimensions: bool = True):
         if not self.current_album_art_path or \
            not self.current_art_image_widget or \
            not self.current_art_dimensions_label or \
@@ -1229,7 +1229,7 @@ class MainWindow(QMainWindow):
         self.current_art_dimensions_label.setText(f"{pixmap.width()}x{pixmap.height()}")
 
         # Auto-fill min_dims_entry with the new image's dimensions
-        if self.min_dims_entry:
+        if set_min_dimensions and self.min_dims_entry:
             new_dims_text = f"{pixmap.width()}x{pixmap.height()}"
             if self.min_dims_entry.text() != new_dims_text: # Avoid unnecessary signal emissions if same
                 self.min_dims_entry.setText(new_dims_text)

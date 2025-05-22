@@ -37,7 +37,7 @@ ARG_DEFINITIONS: List[Tuple[List[str], Dict[str, Any]]] = [
                                             "Output Directory: Set to the file's parent if --output-dir is not specified. "
                                             "Min Width/Height: If a local cover is found and --min-width/--min-height are not explicitly set, "
                                             "they will be derived from the existing art's dimensions, aiming to find a strictly larger image. "
-                                            "Explicit CLI arguments (e.g., --artist \"A\", --output-dir /p, --min-width 500) always take precedence."
+                                            "Explicit CLI arguments (e.g., --artist \"\", --output-dir /p, --min-width 0) always take precedence."
                                 }),
     (["--batch-size"],          {"type": int, "help": "Number of potential images to fetch and process per service in each batch (e.g., 5)"}),
     (["--min-width"],           {"type": int, "help": "Minimum width for downloaded images (pixels)"}),
@@ -242,11 +242,11 @@ def _apply_general_cli_overrides(
     # min_width/min_height might be set by --from-file or directly by CLI.
     # _handle_from_file_logic already modified args.min_width/args.min_height if needed.
     if args.min_width is not None:
-        if args.min_width < 1: parser.error("--min-width must be a positive integer.")
+        if args.min_width < 0: parser.error("--min-width must be a non-negative integer.")
         initial_ui_config["min_width"] = args.min_width
 
     if args.min_height is not None:
-        if args.min_height < 1: parser.error("--min-height must be a positive integer.")
+        if args.min_height < 0: parser.error("--min-height must be a non-negative integer.")
         initial_ui_config["min_height"] = args.min_height
 
 

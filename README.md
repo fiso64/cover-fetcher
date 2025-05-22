@@ -40,17 +40,11 @@ Pre-built applications are not currently available. Please see the "Run from Sou
 
 ### GUI
 
-After installation, run the executable. If you built from source, run:
-```bash
-python main.py
-```
+After installation, run the executable.
 Enter artist/album, select services, and click "Search".
-- Single/double click results to view/save.
-- Drag-and-drop services to reorder.
-- Scroll result rows horizontally with `Shift + Mouse Wheel`.
-
-### Keyboard Shortcuts
-
+* Single/double click results to view/save.
+* Drag-and-drop services to reorder.
+* Scroll result rows horizontally with `Shift + Mouse Wheel`.
 *   `Enter` (in Artist/Album/Min. Dims input fields): Start Search
 *   `Alt+D`: Focus Album input field
 *   `Ctrl+P`: Open Settings dialog
@@ -74,16 +68,11 @@ python main.py [OPTIONS] [query]
 *   `--no-save-prompt`: Save images directly without a dialog.
 *   `--exit-on-download`: Exit after a successful download.
 
-**Example (running from source):**
+**Example:**
 ```bash
-python main.py --from-file "song.flac" --min-width 600 --no-save-prompt
+CoverFetcher.exe --from-file "song.flac" --min-width 600 --no-save-prompt
 ```
 For a full list of CLI options: `python main.py --help` (or `CoverFetcher.exe --help`)
-
-## Configuration
-
-User preferences (like API keys, theme, default paths) are stored in `~/.config/cover_fetcher/config.json`
-Most settings can be configured through the application's Settings dialog (⚙ icon or `Ctrl+P`).
 
 ## Run from Source
 
