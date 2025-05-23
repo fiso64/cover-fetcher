@@ -119,7 +119,7 @@ def main():
     logger.info("Global exception handler set.")
 
     app = QApplication(sys.argv)
-    app.setApplicationVersion("0.1")
+    app.setApplicationVersion("0.2")
 
     # Show configuration load errors now that QApplication exists
     if initial_config_errors:
