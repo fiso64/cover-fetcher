@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QApplication
 from PySide6 import __version__ as PySide6_VERSION
 
 # for storing qss theme cache
-CACHE_DIR = pathlib.Path.home() / ".cache" / "cover_fetcher"
+CACHE_DIR = pathlib.Path.home() / ".cache" / "cover-fetcher"
 
 logger = logging.getLogger(__name__)
 

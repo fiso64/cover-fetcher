@@ -125,7 +125,7 @@ CONFIG_ITEM_DEFINITIONS: List[ConfigItem] = [
     )
 ]
 APP_CONFIG_FILE = get_bundle_dir() / "app_config.json"
-USER_CONFIG_DIR = pathlib.Path.home() / ".config" / "cover_fetcher"
+USER_CONFIG_DIR = pathlib.Path.home() / ".config" / "cover-fetcher"
 USER_CONFIG_FILE = USER_CONFIG_DIR / "config.json"
 
 # TODO: Stop using globals
