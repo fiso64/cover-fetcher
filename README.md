@@ -8,9 +8,7 @@ A desktop application to search for and download album art from various online m
 ## Features
 
 *   **Multi-Service Search:** Simultaneously queries multiple online sources.
-*   **Image Previews & Viewer:** Visually inspect images before downloading.
 *   **Service Management:** Prioritize and toggle art sources via drag-and-drop.
-*   **Customizable:** Light/Dark themes, adjustable thumbnail sizes.
 *   **Dimension Filtering:** Filter results by minimum image dimensions.
 *   **'Current Art' Display:** Show local art for quick comparison (can be auto-set with `--from-file`).
 *   **Command-Line Interface**
@@ -42,10 +40,10 @@ Pre-built applications are not currently available. Please see the "Run from Sou
 
 After installation, run the executable.
 Enter artist/album, select services, and click "Search".
-* Single/double click results to view/save.
-* Drag-and-drop services to reorder.
-* Scroll result rows horizontally with `Shift + Mouse Wheel`.
-*   `Enter` (in Artist/Album/Min. Dims input fields): Start Search
+* Single/double click results to view/save
+* Drag-and-drop services to reorder
+* Scroll result rows horizontally with `Shift + Mouse Wheel`
+*   `Enter`: Start Search
 *   `Alt+D`: Focus Album input field
 *   `Ctrl+P`: Open Settings dialog
 *   `Ctrl+I`: Set image for 'Current Art' display
@@ -53,14 +51,9 @@ Enter artist/album, select services, and click "Search".
 ### Command-Line
 
 ```bash
-# If using the executable:
-CoverFetcher.exe [OPTIONS] [query]
-
-# If running from source:
-python main.py [OPTIONS] [query]
+CoverFetcher.exe [OPTIONS]
 ```
 **Key Options:**
-*   `[query]`: Positional argument for quick search: `"Album Title"` or `"Artist - Album"`.
 *   `--artist "Name" --album "Title"`: Specify artist and album.
 *   `--from-file "/path/to/audio.mp3"`: Extract metadata and search.
 *   `--services "itunes,bandcamp"`: Specify active services and their order.
@@ -72,7 +65,7 @@ python main.py [OPTIONS] [query]
 ```bash
 CoverFetcher.exe --from-file "song.flac" --min-width 600 --no-save-prompt
 ```
-For a full list of CLI options: `python main.py --help` (or `CoverFetcher.exe --help`)
+For a full list of CLI options, run `CoverFetcher.exe --help`.
 
 ## Run from Source
 
