@@ -3,11 +3,18 @@ import pathlib
 import logging
 import sys
 import os
+from typing import Optional
 
 DEFAULT_LOG_LEVEL = logging.DEBUG # Temporary default
 logger = logging.getLogger(__name__)
 
+# Global variables to store the effective logging configuration
+EFFECTIVE_LOG_FILE_PATH: Optional[str] = None
+EFFECTIVE_LOG_LEVEL: int = DEFAULT_LOG_LEVEL
+
+
 def setup_logging():
+    global EFFECTIVE_LOG_FILE_PATH, EFFECTIVE_LOG_LEVEL
     log_file_path = None
     try:
         argv_list = sys.argv[1:]
@@ -31,7 +38,8 @@ def setup_logging():
 
     # Configure the root logger
     root_logger = logging.getLogger()
-    root_logger.setLevel(DEFAULT_LOG_LEVEL)
+    EFFECTIVE_LOG_LEVEL = DEFAULT_LOG_LEVEL # Store the level that will be used
+    root_logger.setLevel(EFFECTIVE_LOG_LEVEL)
     root_logger.handlers.clear() # Clear any existing handlers (e.g., from basicConfig if called elsewhere)
 
     # Console Handler (always add)
@@ -50,17 +58,21 @@ def setup_logging():
 
             file_handler = logging.FileHandler(abs_log_file_path, mode='a', encoding='utf-8')
             file_handler.setFormatter(log_formatter)
-            file_handler.setLevel(DEFAULT_LOG_LEVEL) # File can have its own level
+            file_handler.setLevel(EFFECTIVE_LOG_LEVEL) # File can have its own level, align with root
             root_logger.addHandler(file_handler)
+            EFFECTIVE_LOG_FILE_PATH = abs_log_file_path # Store the path
             # Cannot use logger.info here yet if this is the very first log message
             print(f"INFO: Logging to file: {abs_log_file_path}", file=sys.stderr)
         except Exception as e:
             # If file logging setup fails, console logging will still work.
             # Print an error directly to stderr.
             print(f"ERROR: Error setting up log file {log_file_path}: {e}. Logging to console only.", file=sys.stderr)
+            EFFECTIVE_LOG_FILE_PATH = None # Ensure it's None on failure
             # If root_logger is already partially configured, an error message can be logged.
             # However, logger instance from getLogger(__name__) might not be fully set up here.
             # logging.error(f"Failed to set up file logging to {log_file_path}", exc_info=True) # This might be too early
+    else:
+        EFFECTIVE_LOG_FILE_PATH = None # Explicitly None if no file path
 
     # Set levels for other verbose loggers
     musicbrainzngs_logger = logging.getLogger('musicbrainzngs')

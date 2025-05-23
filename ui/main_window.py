@@ -21,6 +21,7 @@ from PySide6.QtCore import Qt, QTimer, Signal, Slot, QUrl, QByteArray, QSettings
 from PySide6.QtGui import QKeySequence, QShortcut, QDesktopServices, QFont, QFontMetrics, QPixmap, QColor, QMouseEvent # Added QPixmap, QColor, QMouseEvent
 from PySide6.QtCore import QThread, Signal
 
+from utils.helpers import EFFECTIVE_LOG_FILE_PATH, EFFECTIVE_LOG_LEVEL
 from .theme_manager import apply_app_theme_and_custom_styles, apply_theme_tweaks_windows
 from .notifications import NotificationManager, DEFAULT_TIMEOUT_MS
 from utils.config import get_user_downloads_folder, save_user_config, USER_CONFIG, DEFAULT_CONFIG
@@ -404,7 +405,7 @@ class MainWindow(QMainWindow):
         self.event_queue = multiprocessing.Queue()
         self._worker_ready_event.clear()
 
-        process_args = (self.command_queue, self.event_queue, initial_search_payload_for_worker)
+        process_args = (self.command_queue, self.event_queue, initial_search_payload_for_worker, EFFECTIVE_LOG_LEVEL, EFFECTIVE_LOG_FILE_PATH)
         try:
             self.worker_process = multiprocessing.Process(target=worker_process_main, args=process_args, daemon=True)
             self.worker_process.start()

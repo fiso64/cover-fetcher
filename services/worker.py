@@ -2,6 +2,7 @@
 import logging
 import multiprocessing
 import queue 
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Tuple, Optional, List, Dict, TYPE_CHECKING
 
@@ -90,10 +91,37 @@ class EVT_WorkerShutdownComplete: # Empty payload
     pass
 
 
-def setup_worker_logging(log_level=logging.DEBUG):
-    # Configure basic logging for the worker process
-    logging.basicConfig(level=log_level, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+def setup_worker_logging(log_level: int, log_file_path: Optional[str] = None):
+    # Configure logging for the worker process based on parameters from main process
+    log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(log_level)
+    root_logger.handlers.clear() # Clear any pre-existing handlers
+
+    # Console Handler (always add to worker's stderr)
+    console_handler = logging.StreamHandler(sys.stderr)
+    console_handler.setFormatter(log_formatter)
+    console_handler.setLevel(log_level)
+    root_logger.addHandler(console_handler)
+
+    if log_file_path:
+        try:
+            # The main process should have ensured the directory exists.
+            # The worker just attempts to open/append to the file.
+            file_handler = logging.FileHandler(log_file_path, mode='a', encoding='utf-8')
+            file_handler.setFormatter(log_formatter)
+            file_handler.setLevel(log_level)
+            root_logger.addHandler(file_handler)
+        except Exception as e:
+            # If file logging setup fails in worker, log an error to its console.
+            # This uses the root_logger which now has at least a console handler.
+            logging.error(f"[Worker] Error setting up log file '{log_file_path}': {e}. Logging to console only.", exc_info=True)
     
+    # Get the logger for this specific module (services.worker) AFTER root configuration.
+    # This allows this module's logger instance (defined at the top of the file) to pick up the new config.
+    worker_module_logger = logging.getLogger(__name__) # Could also be logging.getLogger("services.worker")
+
     # Set specific log levels for noisy libraries within the worker process
     musicbrainzngs_logger_worker = logging.getLogger('musicbrainzngs')
     musicbrainzngs_logger_worker.setLevel(logging.WARNING)
@@ -104,10 +132,12 @@ def setup_worker_logging(log_level=logging.DEBUG):
     pil_logger_worker = logging.getLogger('PIL')
     pil_logger_worker.setLevel(logging.WARNING)
     
-    logger.info(f"[Worker] Logging configured for worker process. Root level: {log_level}. Library levels set to WARNING.")
+    # Use the now-configured logger for this module
+    worker_module_logger.info(f"[Worker] Logging configured. Root level: {logging.getLevelName(log_level)}. File: '{log_file_path if log_file_path else 'None'}'. Library levels set to WARNING.")
+
 
 class Worker:
-    def __init__(self, command_queue: multiprocessing.Queue, event_queue: multiprocessing.Queue, initial_search_params: Optional[Tuple] = None):
+    def __init__(self, command_queue: multiprocessing.Queue, event_queue: multiprocessing.Queue, initial_search_params: Optional[CMD_Search] = None): # Type hint was Tuple, should be CMD_Search
         self.command_queue = command_queue
         self.event_queue = event_queue
         self.service_manager: Optional[ServiceManager] = None
@@ -146,8 +176,8 @@ class Worker:
             self._should_shutdown = True
 
     def run(self):
-        setup_worker_logging() 
-        logger.info("[Worker] Worker process started.")
+        # Logging is now set up by worker_process_main BEFORE Worker instance is created and run() is called.
+        logger.info("[Worker] Worker process started.") # This logger will use the configuration set in worker_process_main
         self._initialize_service_manager()
 
         if self.initial_search_params and self.service_manager and not self._should_shutdown:
@@ -245,6 +275,18 @@ class Worker:
             self.service_manager.shutdown()
 
 
-def worker_process_main(command_queue: multiprocessing.Queue, event_queue: multiprocessing.Queue, initial_search_params: Optional[CMD_Search] = None): # Type hint updated
+def worker_process_main(
+    command_queue: multiprocessing.Queue,
+    event_queue: multiprocessing.Queue,
+    initial_search_params: Optional[CMD_Search] = None,
+    # New parameters for logging, passed from the main process
+    log_level_from_main: int = logging.DEBUG,  # Default, but should be overridden
+    log_file_path_from_main: Optional[str] = None
+):
+    # Setup logging for this worker process using parameters from the main process
+    # This is the VERY FIRST thing to do in the new process.
+    setup_worker_logging(log_level=log_level_from_main, log_file_path=log_file_path_from_main)
+    
+    # Now initialize and run the worker
     worker = Worker(command_queue, event_queue, initial_search_params)
     worker.run()
