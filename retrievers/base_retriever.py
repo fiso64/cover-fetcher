@@ -405,14 +405,6 @@ class AbstractImageRetriever(abc.ABC):
             else:
                 # Not a CF-suggestive error, or scraper was already tried, or not expecting CF.
                 raise e
-        except RetrieverDataError as e_data:
-            # Placeholder: If a RetrieverDataError could also indicate a Cloudflare page,
-            # similar logic could be added here, possibly checking e_data.url or some content hint.
-            # For now, primarily relying on RetrieverAPIError for automatic fallback.
-            # If expect_html_cloudflare and current_scraper_to_use is None and "some specific content":
-            #    ... try scraper ...
-            raise e_data
-
 
     def _make_generic_json_request(
         self,

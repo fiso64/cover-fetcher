@@ -55,28 +55,22 @@ class LastFmRetriever(AbstractImageRetriever):
         if self._check_cancelled(cancel_event, "before starting search_album_candidates"):
             return []
         
-        # Input validation
-        cleaned_album_for_query = re.sub(r'[^\w\s-]', ' ', album.strip()).strip() if album else ""
-        cleaned_artist_for_query = re.sub(r'[^\w\s-]', ' ', artist.strip()).strip() if artist else ""
+        # Only simple input cleaning, otherwise last.fm might not return any matches
+        search_query = f"{artist} {album}".replace('.', ' ').replace(':', ' ').replace('-', ' ').strip()
 
-        query_parts = []
-        if cleaned_album_for_query: query_parts.append(cleaned_album_for_query)
-        if cleaned_artist_for_query: query_parts.append(cleaned_artist_for_query)
-
-        if not query_parts:
-            msg = "Both artist and album search terms are effectively empty after cleaning for Last.fm search."
+        if not search_query:
+            msg = "Both artist and album search terms are effectively empty for Last.fm search."
             logger.warning(f"[{self.service_name}] {msg}")
             raise RetrieverInputError(msg)
 
-        search_query = " ".join(query_parts)
         search_url = f"{self.base_url}/search/albums?q={urllib.parse.quote_plus(search_query)}"
         logger.info(f"[{self.service_name}] Searching Last.fm: {search_url}")
 
         search_response_obj = super()._perform_http_get_request(
             url=search_url,
             cancel_event=cancel_event,
-            request_context=f"Last.fm album search for '{search_query}'"
-            # No scraper_instance needed for Last.fm
+            request_context=f"Last.fm album search for '{search_query}'",
+            expect_html_cloudflare=True # use cloudscraper as fallback if requests.get fails
         )
 
         if self._check_cancelled(cancel_event, "after Last.fm search request") or search_response_obj is None:
@@ -297,7 +291,8 @@ class LastFmRetriever(AbstractImageRetriever):
         gallery_response_obj = super()._perform_http_get_request(
             url=gallery_page_url,
             cancel_event=cancel_event,
-            request_context=f"Last.fm gallery page for '{candidate.album_name}'"
+            request_context=f"Last.fm gallery page for '{candidate.album_name}'",
+            expect_html_cloudflare=True
         )
 
         if self._check_cancelled(cancel_event, "after fetching gallery page") or gallery_response_obj is None:

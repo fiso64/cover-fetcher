@@ -249,19 +249,21 @@ def _apply_general_cli_overrides(
 
         for service_name_cli in cli_service_names_ordered:
             found_in_default = False
-            for def_service_name, _ in default_config_base.get("services", []):
-                if def_service_name.lower() == service_name_cli.lower():
-                    if def_service_name not in processed_from_cli:
-                        new_services_config_tuples.append((def_service_name, True))
-                        processed_from_cli.add(def_service_name)
+            all_services = default_config_base.get("services", [])
+            for service_name, _ in all_services:
+                if service_name.lower() == service_name_cli.lower():
+                    if service_name not in processed_from_cli:
+                        new_services_config_tuples.append((service_name, True))
+                        processed_from_cli.add(service_name)
                     found_in_default = True
                     break
             if not found_in_default:
-                parser.error(f"Service '{service_name_cli}' from --services is not a recognized default service.")
+                service_name_str = ', '.join([name for name, _ in all_services])
+                parser.error(f"Service '{service_name_cli}' is not a recognized service. Choose from: {service_name_str}")
         
-        for def_service_name, _ in default_config_base.get("services", []):
-            if def_service_name not in processed_from_cli:
-                new_services_config_tuples.append((def_service_name, False)) # Add remaining default services as disabled
+        for service_name, _ in all_services:
+            if service_name not in processed_from_cli:
+                new_services_config_tuples.append((service_name, False)) # Add remaining default services as disabled
         
         new_services_list_of_lists = [list(s) for s in new_services_config_tuples]
         initial_ui_config["services"] = new_services_list_of_lists
