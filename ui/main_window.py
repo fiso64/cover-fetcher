@@ -266,6 +266,7 @@ class MainWindow(QMainWindow):
         self.current_art_image_widget: Optional[MainWindow._CurrentArtWidget] = None
         self.current_art_dimensions_label: Optional[QLabel] = None
         self.CURRENT_ART_IMAGE_SIZE = QSize(120, 120) # Define image display size
+        self._is_initiating_search = False # Guard against re-entrant search calls
 
         self._setup_ui_frames()
 
@@ -300,8 +301,9 @@ class MainWindow(QMainWindow):
         self.event_poll_timer.timeout.connect(self._poll_event_queue)
         self.event_poll_timer.start(EVENT_QUEUE_POLL_INTERVAL_MS)
 
-        QShortcut(QKeySequence(Qt.Key_Return), self, self._on_load_images_click) 
-        QShortcut(QKeySequence(Qt.Key_Enter), self, self._on_load_images_click) 
+        # For Enter/Return key presses, we want to cancel ongoing search
+        QShortcut(QKeySequence(Qt.Key_Return), self, lambda: self._on_load_images_click(cancel_if_ongoing=True))
+        QShortcut(QKeySequence(Qt.Key_Enter), self, lambda: self._on_load_images_click(cancel_if_ongoing=True))
         QShortcut(QKeySequence("Alt+D"), self, lambda: (self.album_entry.setFocus(), self.album_entry.selectAll()))
         QShortcut(QKeySequence(Qt.Key_Escape), self, self._handle_escape_key)
         QShortcut(QKeySequence("Ctrl+P"), self, self._show_settings_dialog) # Added settings shortcut
@@ -561,9 +563,10 @@ class MainWindow(QMainWindow):
         self.cancel_button.setVisible(False) 
         input_layout.addWidget(self.cancel_button, 0)
 
-        self.artist_entry.returnPressed.connect(self._on_load_images_click) 
-        self.album_entry.returnPressed.connect(self._on_load_images_click)
-        self.min_dims_entry.returnPressed.connect(self._on_load_images_click) # Also trigger search on Enter
+        # For returnPressed in input fields, also cancel ongoing search
+        self.artist_entry.returnPressed.connect(lambda: self._on_load_images_click(cancel_if_ongoing=True))
+        self.album_entry.returnPressed.connect(lambda: self._on_load_images_click(cancel_if_ongoing=True))
+        self.min_dims_entry.returnPressed.connect(lambda: self._on_load_images_click(cancel_if_ongoing=True))
         
         left_controls_vbox_layout.addWidget(input_group)
 
@@ -912,60 +915,77 @@ class MainWindow(QMainWindow):
         
         QApplication.processEvents()
 
-    def _on_load_images_click(self):
-        QTimer.singleShot(0, self._execute_search_initiation)
+    def _on_load_images_click(self, cancel_if_ongoing: bool = False):
+        # This method is the direct slot for UI signals.
+        # It schedules the actual search initiation to run after current event processing.
+        QTimer.singleShot(0, lambda: self._execute_search_initiation(cancel_if_ongoing=cancel_if_ongoing))
 
-    def _execute_search_initiation(self):
-        if self.cancel_button.isVisible(): 
-            logger.warning("[GUI] Load Images triggered, but a search is already in progress. Ignoring.")
-            return
-
-        current_search_artist = self.artist_entry.text().strip()
-        current_search_album = self.album_entry.text().strip()
-
-        if not current_search_album:
-            QMessageBox.critical(self, "Input Error", "Album Title is required.")
+    def _execute_search_initiation(self, cancel_if_ongoing: bool):
+        if self._is_initiating_search:
+            logger.debug("[GUI] Search initiation already in progress, ignoring redundant trigger.")
             return
         
-        logger.info(f"[GUI] Load Images: Artist='{current_search_artist}', Album='{current_search_album}'")
+        self._is_initiating_search = True
+        try:
+            if self.cancel_button.isVisible(): # A search is currently active or appears to be
+                if cancel_if_ongoing:
+                    logger.info("[GUI] New search requested while a search is active; proceeding to cancel old and start new.")
+                    if self.worker_process and self.worker_pid is not None: # Check if worker is active for cancellation
+                        self._send_command_to_worker(CMD_CancelSearch())
+                    # Proceed to set up the new search. UI elements (buttons, sections)
+                    # will be updated by the subsequent code in this method.
+                else: # cancel_if_ongoing is False (e.g. Search button clicked)
+                    logger.warning("[GUI] Load Images triggered (e.g. button click), but a search is already in progress. Ignoring.")
+                    return # Do not proceed with new search
 
-        # Restarting the worker on every new search was overkill. Keep it here as a comment, just in case.
-        # logger.info(f"[GUI] Load Images: Terminating current worker (PID: {self.worker_pid or 'N/A'}) to start fresh search.")
-        # self._terminate_current_worker(graceful_timeout=0.2, force_if_needed=True)
-        
-        if not self.worker_process or not self.worker_process.is_alive():
-            start_success = self._start_worker_process()
-            if not start_success:
+            current_search_artist = self.artist_entry.text().strip()
+            current_search_album = self.album_entry.text().strip()
+
+            if not current_search_album:
+                QMessageBox.critical(self, "Input Error", "Album Title is required.")
+                return
+            
+            logger.info(f"[GUI] Load Images: Artist='{current_search_artist}', Album='{current_search_album}'")
+
+            # Restarting the worker on every new search was overkill. Keep it here as a comment, just in case.
+            # logger.info(f"[GUI] Load Images: Terminating current worker (PID: {self.worker_pid or 'N/A'}) to start fresh search.")
+            # self._terminate_current_worker(graceful_timeout=0.2, force_if_needed=True)
+            
+            if not self.worker_process or not self.worker_process.is_alive():
+                start_success = self._start_worker_process()
+                if not start_success:
+                    self.load_button.setEnabled(True); self.load_button.setVisible(True)
+                    self.cancel_button.setVisible(False)
+                    QMessageBox.critical(self, "Error", "Could not start background service for the search.")
+                    return
+            
+            self.load_button.setVisible(False)
+            self.cancel_button.setEnabled(True); self.cancel_button.setVisible(True)
+            self._prepare_ui_for_search_start()
+
+            logger.info("[GUI] Sending search command to worker.")
+            
+            current_batch_size = self.session_config.get("batch_size", DEFAULT_CONFIG.get("batch_size"))
+            search_command_data = CMD_Search(
+                artist=current_search_artist,
+                album=current_search_album,
+                front_only_setting=self.front_only_var_checkbox.isChecked(),
+                active_services_config=list(self.configured_services),
+                batch_size=int(current_batch_size) if current_batch_size is not None else None
+            )
+            
+            if not self._send_command_to_worker(search_command_data):
+                QMessageBox.critical(self, "Error", "Could not start search. Communication failed.")
+                # Revert UI if sending command fails
                 self.load_button.setEnabled(True); self.load_button.setVisible(True)
                 self.cancel_button.setVisible(False)
-                QMessageBox.critical(self, "Error", "Could not start background service for the search.")
-                return
-        
-        self.load_button.setVisible(False)
-        self.cancel_button.setEnabled(True); self.cancel_button.setVisible(True)
-        self._prepare_ui_for_search_start()
-
-        logger.info("[GUI] Sending search command to worker.")
-        
-        current_batch_size = self.session_config.get("batch_size", DEFAULT_CONFIG.get("batch_size"))
-        search_command_data = CMD_Search(
-            artist=current_search_artist,
-            album=current_search_album,
-            front_only_setting=self.front_only_var_checkbox.isChecked(),
-            active_services_config=list(self.configured_services),
-            batch_size=int(current_batch_size) if current_batch_size is not None else None
-        )
-        
-        if not self._send_command_to_worker(search_command_data):
-            QMessageBox.critical(self, "Error", "Could not start search. Communication failed.")
-            # Revert UI if sending command fails
-            self.load_button.setEnabled(True); self.load_button.setVisible(True)
-            self.cancel_button.setVisible(False)
-        else:
-            logger.info(f"[GUI] Search for '{current_search_album}' initiated with worker {self.worker_pid}.")
-            self.notification_manager.clear_all_notifications(immediate=True) # Clear previous notifications
-            QMetaObject.invokeMethod(self.image_fetcher, "clear_cache_slot", Qt.QueuedConnection)
-            logger.info("[GUI] Queued clear_cache_slot for ImageFetcher for the new search.")
+            else:
+                logger.info(f"[GUI] Search for '{current_search_album}' initiated with worker {self.worker_pid}.")
+                self.notification_manager.clear_all_notifications(immediate=True) # Clear previous notifications
+                QMetaObject.invokeMethod(self.image_fetcher, "clear_cache_slot", Qt.QueuedConnection)
+                logger.info("[GUI] Queued clear_cache_slot for ImageFetcher for the new search.")
+        finally:
+            self._is_initiating_search = False
 
     def _on_cancel_search_click(self):
         logger.info("[GUI] Cancel search button clicked.")

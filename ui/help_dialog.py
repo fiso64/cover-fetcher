@@ -8,9 +8,9 @@ class HelpDialog(QDialog):
     def __init__(self, arg_definitions: List[Tuple[List[str], Dict[str, Any]]], parent: QWidget = None):
         super().__init__(parent)
         self.setWindowTitle("Command Line Options - Cover Fetcher")
-        self.setMinimumWidth(700)
-        self.setMinimumHeight(500)
-        self.resize(800, 600)
+        self.setMinimumWidth(300)
+        self.setMinimumHeight(300)
+        self.resize(800, 610)
 
         main_layout = QVBoxLayout(self)
 
