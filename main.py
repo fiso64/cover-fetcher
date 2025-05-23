@@ -1,22 +1,8 @@
 # main.py
 import time
 start_time = time.time()
-
-# IMPORTANT: utils.config performs initial config loading at import time.
 # Logging should be set up BEFORE utils.config is imported if we want to see its loading logs.
-import logging
-DEFAULT_LOG_LEVEL = logging.DEBUG # Temporary default
-logger = logging.getLogger(__name__)
-def setup_logging():
-    logging.basicConfig(level=DEFAULT_LOG_LEVEL, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    musicbrainzngs_logger = logging.getLogger('musicbrainzngs')
-    musicbrainzngs_logger.setLevel(logging.WARNING)
-    urllib_logger = logging.getLogger('urllib3')
-    urllib_logger.setLevel(logging.WARNING)
-    pil_logger = logging.getLogger('PIL')
-    pil_logger.setLevel(logging.WARNING)
-    qt_logger = logging.getLogger('PySide6')
-    qt_logger.setLevel(logging.INFO)
+from utils.helpers import setup_logging
 setup_logging()
 
 from PySide6.QtWidgets import QApplication, QMessageBox
@@ -34,6 +20,8 @@ from cli import process_cli_arguments
 
 if TYPE_CHECKING:
     from services.worker import CMD_Search
+
+logger = logging.getLogger(__name__)
 
 # --- Global Exception Handler ---
 def handle_global_exception(exc_type, exc_value, exc_traceback):

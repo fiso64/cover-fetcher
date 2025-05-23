@@ -24,7 +24,7 @@ ARG_DEFINITIONS: List[Tuple[List[str], Dict[str, Any]]] = [
     (["query"],                 {"nargs": '?', "type": str, "help": "Album name, 'Artist - Album' string, or path to a music file (acts like --from-file if path)."}),
     (["--front-only"],          {"action": "store_true", "help": "Only search for front cover images"}),
     (["--no-front-only"],       {"action": "store_true", "help": "Search for all image types (disable front-only mode)"}),
-    (["--services"],            {"type": str, "help": "Comma-separated list of services to enable (e.g. 'bandcamp,last.fm'). Order matters."}),
+    (["--services"],            {"type": str, "help": "Comma-separated list of services to enable (e.g. 'bandcamp,last.fm')"}),
     (["-o", "--output-dir"],    {"type": str, "help": "Set default output directory for saving images"}),
     (["-f", "--filename"],      {"type": str, "help": "Set default filename (without extension) for saved images"}),
     (["-y", "--no-save-prompt"],{"action": "store_true", "help": "Save images directly to output dir without showing file dialog"}),
@@ -43,6 +43,7 @@ ARG_DEFINITIONS: List[Tuple[List[str], Dict[str, Any]]] = [
     (["--min-width"],           {"type": int, "help": "Minimum width for downloaded images (pixels)"}),
     (["--min-height"],          {"type": int, "help": "Minimum height for downloaded images (pixels)"}),
     (["--existing-art-path"],   {"type": str, "help": "Path to an existing album art image to display initially."}),
+    (["--log-file"],            {"type": str, "dest": "log_file", "help": "Path to a file for logging output."}),
 ]
 
 class ArgumentParserError(Exception):
@@ -243,30 +244,45 @@ def _apply_general_cli_overrides(
         initial_ui_config["exit_on_download"] = True
 
     if args.services:
-        cli_service_names_ordered = [name.strip() for name in args.services.split(',') if name.strip()]
-        new_services_config_tuples = []
-        processed_from_cli = set()
+        cli_service_names_input_lower_set = {name.strip().lower() for name in args.services.split(',') if name.strip()}
+        
+        # Helper to check if a service list from config is valid and extract canonical names
+        def _get_valid_base_service_config(cfg_list) -> List[Tuple[str, bool]]:
+            valid_config = []
+            if not isinstance(cfg_list, list): return []
+            for s_entry in cfg_list:
+                if (isinstance(s_entry, (list, tuple)) and len(s_entry) == 2 and
+                        isinstance(s_entry[0], str) and isinstance(s_entry[1], bool)):
+                    valid_config.append((s_entry[0], s_entry[1])) # (CanonicalName, OriginalEnabledState)
+                else:
+                    logger.warning(f"Malformed service entry in base config: {s_entry}. Skipping.")
+            return valid_config
 
-        for service_name_cli in cli_service_names_ordered:
-            found_in_default = False
-            all_services = default_config_base.get("services", [])
-            for service_name, _ in all_services:
-                if service_name.lower() == service_name_cli.lower():
-                    if service_name not in processed_from_cli:
-                        new_services_config_tuples.append((service_name, True))
-                        processed_from_cli.add(service_name)
-                    found_in_default = True
-                    break
-            if not found_in_default:
-                service_name_str = ', '.join([name for name, _ in all_services])
-                parser.error(f"Service '{service_name_cli}' is not a recognized service. Choose from: {service_name_str}")
+        # Determine the base service configuration and order.
+        # Priority: initial_ui_config (user's saved order) -> default_config_base.
+        base_service_config = _get_valid_base_service_config(initial_ui_config.get("services"))
+        if not base_service_config:
+            logger.warning("User 'services' config malformed/missing. Falling back to default for CLI --services processing.")
+            base_service_config = _get_valid_base_service_config(default_config_base.get("services", []))
+            if not base_service_config:
+                logger.error("Default 'services' config also malformed or empty. Cannot process --services.")
+                # base_service_config remains empty, loop below will produce empty list.
+
+        # Validate that all CLI-provided service names are known (exist in base_service_config)
+        known_canonical_names_lower_set = {canonical_name.lower() for canonical_name, _ in base_service_config}
+        for cli_name_lower in cli_service_names_input_lower_set:
+            if cli_name_lower not in known_canonical_names_lower_set:
+                available_names_str = ', '.join(sorted([name for name, _ in base_service_config]))
+                parser.error(f"Service '{cli_name_lower}' is not a recognized service. Choose from: {available_names_str or 'None available'}")
         
-        for service_name, _ in all_services:
-            if service_name not in processed_from_cli:
-                new_services_config_tuples.append((service_name, False)) # Add remaining default services as disabled
+        # Build the new services list, preserving order from base_service_config
+        # Services mentioned in CLI are enabled, others are disabled.
+        final_services_list_of_lists = []
+        for canonical_name, _original_enabled_state in base_service_config:
+            is_enabled_by_cli = canonical_name.lower() in cli_service_names_input_lower_set
+            final_services_list_of_lists.append([canonical_name, is_enabled_by_cli])
         
-        new_services_list_of_lists = [list(s) for s in new_services_config_tuples]
-        initial_ui_config["services"] = new_services_list_of_lists
+        initial_ui_config["services"] = final_services_list_of_lists
 
     if args.batch_size is not None:
         if args.batch_size < 1: parser.error("--batch-size must be a positive integer.")
