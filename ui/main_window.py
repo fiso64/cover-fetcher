@@ -6,6 +6,7 @@ import queue
 import time
 import copy
 import os
+import re
 import sys
 import pathlib
 import shiboken6
@@ -795,7 +796,6 @@ class MainWindow(QMainWindow):
         if not text:
             return None, None, True # Valid (no filter)
 
-        import re
         match_w_only = re.fullmatch(r"(\d+)", text)
         match_w_x_h = re.fullmatch(r"(\d+)x(\d+)", text)
         match_h_only = re.fullmatch(r"x(\d+)", text)
@@ -1027,19 +1027,34 @@ class MainWindow(QMainWindow):
         full_url = image_data.full_image_url
         logger.info(f"[GUI] Image double-click: Starting save process for {full_url}")
 
-        default_filename_template = self.session_config.get("default_filename")
-        if default_filename_template:
-            base_filename = default_filename_template
-        else:
-            artist_name_safe = "".join(c if c.isalnum() or c in " _-" else "_" for c in self.artist_entry.text().strip())[:50]
-            album_name_safe = "".join(c if c.isalnum() or c in " _-" else "_" for c in self.album_entry.text().strip())[:50]
-            base_filename = "album_art"
-            if artist_name_safe and album_name_safe: base_filename = f"{artist_name_safe} - {album_name_safe}"
-            elif album_name_safe: base_filename = album_name_safe
+        # --- Filename Generation Logic ---
+        base_filename = "Cover"
+
+        filename_template = self.session_config.get("default_filename", DEFAULT_CONFIG.get("default_filename")).strip()
+
+        if filename_template:
+            album = image_data.source_candidate
+            image_type_raw = "Cover" if image_data.is_front else image_data.original_type or "Cover"
+            base_filename = filename_template.replace("{artist}", album.artist_name or "")
+            base_filename = base_filename.replace("{album}", album.album_name or "")
+            base_filename = base_filename.replace("{type}", image_type_raw)
+
+        # Sanitize filename
+        ILLEGAL_FILENAME_CHARS_PATTERN = r'[<>:"/\\|?*\x00-\x1F]'
+        REPLACEMENT_CHAR = ' '
+
+        base_filename = re.sub(ILLEGAL_FILENAME_CHARS_PATTERN, REPLACEMENT_CHAR, base_filename)
+        base_filename = base_filename.strip("-_. ")
+        base_filename = re.sub(r'\s+', ' ', base_filename) # Collapse multiple whitespace to single space
         
+        if not base_filename:
+            base_filename = "Cover"
+
         file_ext = pathlib.Path(full_url).suffix.split('?')[0]
-        if not file_ext or len(file_ext) > 5 or len(file_ext) < 2 : file_ext = ".jpg"
-        final_filename_with_ext = f"{base_filename}{file_ext}"
+        if not file_ext or len(file_ext) > 5 or len(file_ext) < 2 : file_ext = "jpg"
+
+        final_filename_with_ext = f"{base_filename}.{file_ext.strip('.')}"
+        logger.info(f"[GUI] Generated filename: {final_filename_with_ext}")
 
         download_path_str = ""
         if self.session_config.get("no_save_prompt", False):

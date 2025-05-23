@@ -67,12 +67,12 @@ CONFIG_ITEM_DEFINITIONS: List[ConfigItem] = [
     ),
     ConfigItem(
         key="default_filename",
-        label="Default Filename",
+        label="Default Filename Pattern",
         ui_type=ConfigUIType.STRING,
         category=ConfigCategory.BEHAVIOR,
-        default=None, # MainWindow logic handles None: uses "album_art" or "{artist} - {album}"
-        placeholder="e.g. Cover",
-        tooltip="Default filename without extension. Leave blank for default behavior (artist-album)."
+        default="{type}", # {type} is image type, like "Cover" or "Back"
+        placeholder="e.g. {artist} - {album}, {type}, Cover",
+        tooltip="Default filename without extension.\n{type} = image type or \"Cover\"\n{artist} = album artist\n{album} = album title"
     ),
     ConfigItem(
         key="no_save_prompt",
