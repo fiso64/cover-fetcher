@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 ARG_DEFINITIONS: List[Tuple[List[str], Dict[str, Any]]] = [
     (["-r", "--artist"],        {"type": str, "help": "Start a search with album artist"}),
     (["-a", "--album"],         {"type": str, "help": "Start a search with album title (required if --artist is provided)"}),
-    (["query"],                 {"nargs": '?', "type": str, "help": "Album name, 'Artist - Album' string, or path to a music file (acts like --from-file if path)."}),
+    (["query"],                 {"nargs": '?', "type": str, "help": "Album name, 'Artist - Album' string, path to a music file (acts like --from-file), or path to a directory (acts like --from-dir)."}),
     (["--front-only"],          {"action": "store_true", "help": "Only search for front cover images"}),
     (["--no-front-only"],       {"action": "store_true", "help": "Search for all image types (disable front-only mode)"}),
     (["--services"],            {"type": str, "help": "Comma-separated list of services to enable (e.g. 'bandcamp,last.fm')"}),
@@ -35,10 +35,10 @@ ARG_DEFINITIONS: List[Tuple[List[str], Dict[str, Any]]] = [
                                             "Artist/Album: Populated from metadata if --artist/--album are not specified. If --artist=\"\" or --album=\"\" is given, "
                                             "those will be used (effectively disabling metadata extraction for that field). An album name is still required for a search. "
                                             "Output Directory: Set to the file's parent if --output-dir is not specified. "
-                                            "Min Width/Height: If a local cover is found and --min-width/--min-height are not explicitly set, "
-                                            "they will be derived from the existing art's dimensions, aiming to find a strictly larger image. "
+                                            "Min Width/Height: If a local cover is found, they will be derived from the existing art's dimensions, aiming to find a strictly larger image. "
                                             "Explicit CLI arguments (e.g., --artist \"\", --output-dir /p, --min-width 0) always take precedence."
                                 }),
+    (["--from-dir"],            {"type": str, "help": "Path to a directory. Extracts information from the first music file found and behaves like --from-file."}),
     (["--batch-size"],          {"type": int, "help": "Number of potential images to fetch and process per service in each batch (e.g., 5)"}),
     (["--min-width"],           {"type": int, "help": "Minimum width for downloaded images (pixels)"}),
     (["--min-height"],          {"type": int, "help": "Minimum height for downloaded images (pixels)"}),
@@ -146,32 +146,94 @@ def _parse_arguments(is_console_mode: bool) -> Tuple[argparse.Namespace, argpars
 
 
     # --- Argument Validation / Post-processing not directly tied to config modification or from_file ---
-    
-    if args.query:
-        # Check if the positional query argument is an existing file path.
-        # This check must happen before treating 'query' as an "Artist - Album" string.
-        try:
-            # Expand user and check if it's a file.
-            # We don't resolve() here yet, as is_file() should work on relative/absolute paths.
-            # resolve() will be used when setting args.from_file to store a canonical path.
-            potential_file_path = pathlib.Path(args.query).expanduser()
-            if potential_file_path.is_file():
-                if args.from_file is not None:
-                    # Conflict: positional query is a file AND --from-file is also explicitly set.
-                    parser.error("Cannot use a file path as a positional query when --from-file is also specified.")
-                else:
-                    # Positional query is a file, and --from-file was not otherwise specified.
-                    # Treat the query as the source for --from-file.
-                    logger.info(f"Positional query argument '{args.query}' is an existing file. Processing as --from-file.")
-                    args.from_file = str(potential_file_path.resolve()) # Store the absolute, resolved path
-                    args.query = None  # Clear query to prevent it from being parsed as "Artist - Album".
-        except OSError as e:
-            # This might happen for exceptionally long or malformed path strings, though unlikely for typical argv.
-            logger.debug(f"Could not evaluate positional query '{args.query}' as a potential file path due to OSError: {e}. Will proceed to treat as string query.")
-            # Let it fall through; if it's not a valid file path or causes OS error, it will be treated as a regular string query.
-        except Exception as e: # Catch any other unexpected error during path processing
-            logger.warning(f"Unexpected error while checking if query '{args.query}' is a file path: {e}. Will proceed to treat as string query.")
 
+    # Add internal attribute to store original --from-dir path if used.
+    # This attribute is not meant to be set directly by users via CLI.
+    args._internal_original_from_dir_path = None
+
+    # First, handle the positional query argument, as it might define --from-file or --from-dir behavior.
+    # This runs before explicit --from-dir processing so that if query sets args.from_dir,
+    # the subsequent block can process it.
+    if args.query:
+        try:
+            potential_path = pathlib.Path(args.query).expanduser()
+
+            if potential_path.is_dir():
+                # Positional query is a directory.
+                # Check for conflict with *explicitly* provided --from-dir or --from-file flags.
+                # (args.from_dir and args.from_file would be non-None here only if set by explicit flags)
+                if args.from_dir is not None: 
+                    parser.error("Cannot use a directory path as a positional query when --from-dir is also specified.")
+                if args.from_file is not None: 
+                    parser.error("Cannot use a directory path as a positional query when --from-file is also specified.")
+                
+                # No conflicts, so set args.from_dir from the query.
+                # This will be processed by the subsequent "if args.from_dir:" block.
+                logger.info(f"Positional query argument '{args.query}' is an existing directory. Will be processed as --from-dir.")
+                args.from_dir = str(potential_path.resolve())
+                args.query = None  # Clear query to prevent it from being parsed as "Artist - Album".
+
+            elif potential_path.is_file():
+                # Positional query is a file.
+                # Check for conflict with *explicitly* provided --from-file or --from-dir flags.
+                if args.from_file is not None: 
+                     parser.error("Cannot use a file path as a positional query when --from-file is also specified.")
+                if args.from_dir is not None: 
+                     parser.error("Cannot use a file path as a positional query when --from-dir is also specified.")
+
+                # No conflicts, so set args.from_file from the query.
+                # This will be used by _handle_from_file_logic later.
+                logger.info(f"Positional query argument '{args.query}' is an existing file. Processing as --from-file.")
+                args.from_file = str(potential_path.resolve())
+                args.query = None  # Clear query.
+        except OSError as e:
+            # This might happen for exceptionally long or malformed path strings.
+            logger.debug(f"Could not evaluate positional query '{args.query}' as a potential path due to OSError: {e}. Will proceed to treat as string query.")
+        except Exception as e: # Catch any other unexpected error during path processing
+            logger.warning(f"Unexpected error while checking if query '{args.query}' is a path: {e}. Will proceed to treat as string query.")
+
+    # Next, process --from-dir (if set, either by explicit flag or by the query argument).
+    # This block finds a music file within the directory and sets args.from_file accordingly.
+    if args.from_dir:
+        # At this point, args.from_dir is set.
+        # args.from_file might be None (if --from-dir came from query or explicit --from-dir without explicit --from-file)
+        # or args.from_file might be set if an explicit --from-file flag was used.
+        # The latter case is a conflict if args.from_dir is also active.
+        if args.from_file: 
+            # This implies explicit --from-file was used alongside 
+            # (explicit --from-dir OR query-as-directory which set args.from_dir).
+            parser.error("--from-dir cannot be used with --from-file.")
+        
+        from_dir_path = pathlib.Path(args.from_dir).expanduser()
+        if not from_dir_path.is_dir():
+            # This check is important if --from-dir was explicit and invalid.
+            # If set by query, is_dir() was already checked.
+            parser.error(f"--from-dir path '{args.from_dir}' is not a valid directory or does not exist.")
+
+        # Find the first music file recursively
+        AUDIO_EXTENSIONS = {".mp3", ".flac", ".ogg", ".m4a", ".aac", ".wav", ".opus", ".aiff", ".ape", ".wv", ".dsf", ".dff"}
+        found_music_file = None
+        
+        try:
+            paths_to_check = sorted(list(from_dir_path.rglob("*")))
+        except Exception as e:
+            parser.error(f"Error reading directory specified by --from-dir '{args.from_dir}': {e}")
+
+        for item_path in paths_to_check:
+            if item_path.is_file() and item_path.suffix.lower() in AUDIO_EXTENSIONS:
+                found_music_file = item_path
+                break
+        
+        if not found_music_file:
+            parser.error(f"No music files found in directory '{args.from_dir}' (and its subdirectories).")
+        
+        logger.info(f"--from-dir '{args.from_dir}': Using music file '{found_music_file}' for metadata.")
+        # Set args.from_file based on the music file found in the directory.
+        # This allows _handle_from_file_logic to proceed as if --from-file was given with this path.
+        args.from_file = str(found_music_file.resolve()) 
+        args._internal_original_from_dir_path = str(from_dir_path.resolve()) # Store original --from-dir path
+        # We don't clear args.from_dir here; its presence is a flag that --from-file was derived
+        # from a directory operation, which is useful for _handle_from_dir_art_search_fallback.
 
     # These parser.error() calls will now go through CustomArgumentParser.error()
     # This 'if args.query:' will now only be true if:
@@ -437,38 +499,132 @@ def _handle_from_file_logic(args: argparse.Namespace, parser: argparse.ArgumentP
         
         # 3. If art was found (external or embedded), set args.existing_art_path and try to get dimensions
         if found_art_path_str:
-            args.existing_art_path = found_art_path_str
-            if args.min_width is None or args.min_height is None: # Only if not explicitly set by CLI
-                try:
-                    from PIL import Image # Import only when needed
-                    with Image.open(found_art_path_str) as img:
-                        img_width, img_height = img.size
-                        
-                        # Store whether CLI set these, to correctly apply +1 logic
-                        cli_set_min_width = args.min_width is not None
-                        cli_set_min_height = args.min_height is not None
-                        
-                        derived_w, derived_h = None, None
+            _set_existing_art_and_derive_dimensions(args, found_art_path_str, f"--from-file ('{file_path_obj.name}') source")
 
-                        if not cli_set_min_width:
-                            derived_w = img_width
-                            args.min_width = img_width # Temporarily assign for logic below
+
+def _set_existing_art_and_derive_dimensions(
+    args: argparse.Namespace, 
+    found_art_path_str: str, 
+    source_description_for_log: str
+) -> None:
+    """
+    Sets args.existing_art_path and, if min_width/min_height are not CLI-set,
+    derives them from the found art, aiming for a strictly larger image.
+    """
+    args.existing_art_path = found_art_path_str
+    logger.info(f"Using existing art from {source_description_for_log}: {found_art_path_str}")
+
+    # Only derive dimensions if min_width or min_height were not explicitly set by CLI
+    if args.min_width is None or args.min_height is None:
+        try:
+            from PIL import Image # Import only when needed
+            with Image.open(found_art_path_str) as img:
+                img_width, img_height = img.size
+                
+                cli_set_min_width = args.min_width is not None
+                cli_set_min_height = args.min_height is not None
+                
+                derived_w, derived_h = None, None
+
+                if not cli_set_min_width:
+                    derived_w = img_width
+                    args.min_width = img_width # Temporarily assign for logic below
+                if not cli_set_min_height:
+                    derived_h = img_height
+                    args.min_height = img_height # Temporarily assign
+
+                # Apply +1 logic:
+                if derived_w is not None: # Width was derived from this art
+                    args.min_width = derived_w + 1
+                    log_msg_w = f"Set min_width to {args.min_width} (derived from {source_description_for_log} art '{derived_w}px' + 1)"
+                    if not cli_set_min_width: # Log only if it was actually derived here
+                         logger.info(f"{log_msg_w} as --min-width was not specified.")
+                    else: # This case shouldn't happen if derived_w is not None, but for completeness
+                         logger.info(f"{log_msg_w} (overriding previous derivation or initial None).")
+
+
+                    if derived_h is not None: # Height also derived from this art
+                        # No +1 needed for height if width was already incremented.
+                        log_msg_h = f"Set min_height to {args.min_height} (derived from {source_description_for_log} art '{derived_h}px')"
                         if not cli_set_min_height:
-                            derived_h = img_height
-                            args.min_height = img_height # Temporarily assign
+                            logger.info(f"{log_msg_h} as --min-height was not specified and width was incremented.")
+                        else:
+                             logger.info(f"{log_msg_h} (overriding previous derivation or initial None).")
 
-                        # Apply +1 logic: if width was derived, increment it.
-                        # If width was CLI and height derived, increment height.
-                        if derived_w is not None: # Width was derived
-                            args.min_width = derived_w + 1
-                            logger.info(f"Set min_width to {args.min_width} (derived from existing art {derived_w}px + 1) as --min-width was not specified.")
-                            if derived_h is not None: # Height also derived, no +1 needed as width already covers "strictly better"
-                                logger.info(f"Set min_height to {args.min_height} (derived from existing art {derived_h}px) as --min-height was not specified and width was incremented.")
-                        elif derived_h is not None: # Width was CLI-set, Height was derived
-                            args.min_height = derived_h + 1
-                            logger.info(f"Set min_height to {args.min_height} (derived from existing art {derived_h}px + 1) as --min-height was not specified (and --min-width was CLI-provided).")
-                except ImportError: logger.warning("Pillow (PIL) library not found. Cannot extract dimensions from existing art. 'pip install Pillow'.")
-                except Exception as e: logger.warning(f"Could not read dimensions from existing art {found_art_path_str}: {e}")
+                elif derived_h is not None: # Width was CLI-set, Height was derived from this art
+                    args.min_height = derived_h + 1
+                    log_msg_h = f"Set min_height to {args.min_height} (derived from {source_description_for_log} art '{derived_h}px' + 1)"
+                    if not cli_set_min_height:
+                        logger.info(f"{log_msg_h} as --min-height was not specified (and --min-width was CLI-provided).")
+                    else:
+                         logger.info(f"{log_msg_h} (overriding previous derivation or initial None).")
+
+        except ImportError: 
+            logger.warning(f"Pillow (PIL) library not found. Cannot extract dimensions from {source_description_for_log} art. 'pip install Pillow'.")
+        except Exception as e: 
+            logger.warning(f"Could not read dimensions from {source_description_for_log} art '{found_art_path_str}': {e}")
+
+
+def _handle_from_dir_art_search_fallback(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    """
+    If --from-dir was used and no art was found by _handle_from_file_logic (embedded or in music file's parent dir),
+    this function recursively searches the original --from-dir for cover art.
+    Modifies `args` in-place with `existing_art_path` and potentially `min_width`/`min_height`.
+    """
+    # This function should only run if --from-dir was specified (so _internal_original_from_dir_path is set)
+    # AND if no art has been found yet by _handle_from_file_logic.
+    if not args._internal_original_from_dir_path or args.existing_art_path:
+        logger.debug("Skipping _handle_from_dir_art_search_fallback: --from-dir not used or art already found.")
+        return
+
+    original_dir_path = pathlib.Path(args._internal_original_from_dir_path)
+    # args.from_file is guaranteed to be set if _internal_original_from_dir_path is, as per _parse_arguments logic
+    music_file_parent_dir = pathlib.Path(args.from_file).parent.resolve() 
+    
+    logger.info(f"Performing --from-dir fallback art search in: {original_dir_path}, (excluding files directly within: {music_file_parent_dir})")
+
+    found_art_path_str = None
+    pattern_bases = ["cover", "front", "folder", "album"] # Order can matter for preference
+    image_extensions = [".jpg", ".jpeg", ".png"] # Common image extensions
+
+    # 1. Recursively search for common external art files, excluding the music file's immediate parent.
+    # We rglob everything then filter, to allow sorting for some predictability and efficient filtering.
+    all_eligible_files_in_dir_tree = []
+    try:
+        for item in original_dir_path.rglob("*"):
+            if item.is_file():
+                # Exclude files within the music file's immediate parent directory, as it was already checked
+                if item.parent.resolve() != music_file_parent_dir:
+                    all_eligible_files_in_dir_tree.append(item)
+        all_eligible_files_in_dir_tree.sort() # Sort for predictability (e.g. if multiple 'cover.jpg' exist at different depths)
+    except OSError as e:
+        logger.warning(f"Could not recursively list directory {original_dir_path} for fallback art search: {e}")
+        return # Cannot proceed if directory listing fails
+
+    for base_name in pattern_bases:
+        if found_art_path_str: break
+        for ext in image_extensions:
+            target_filename_lower = (base_name + ext).lower()
+            for item in all_eligible_files_in_dir_tree:
+                if item.name.lower() == target_filename_lower:
+                    found_art_path_str = str(item.resolve())
+                    logger.info(f"--from-dir fallback: Found art by pattern match: {found_art_path_str}")
+                    break
+            if found_art_path_str: break
+    
+    # 2. If no pattern match, fallback: first image file found recursively (from the eligible list)
+    if not found_art_path_str:
+        for item in all_eligible_files_in_dir_tree:
+            if item.suffix.lower() in image_extensions:
+                found_art_path_str = str(item.resolve())
+                logger.info(f"--from-dir fallback: Found first available image file as art: {found_art_path_str}")
+                break
+    
+    # 3. If art was found, set args.existing_art_path and try to get dimensions
+    if found_art_path_str:
+        _set_existing_art_and_derive_dimensions(args, found_art_path_str, f"--from-dir ('{original_dir_path.name}') fallback")
+    else:
+        logger.info(f"--from-dir fallback: No suitable art file found in {original_dir_path} (excluding files from {music_file_parent_dir}).")
 
 
 def _prepare_auto_search_payload(
@@ -541,7 +697,14 @@ def process_cli_arguments(
     # --- At this point, argument parsing was successful ---
 
     # Handle --from-file logic (modifies args in-place with extracted data)
+    # This is called even if --from-dir was used, because --from-dir sets args.from_file in _parse_arguments.
     _handle_from_file_logic(args, parser) # parser is passed for its .error() method
+
+    # If --from-dir was used, and _handle_from_file_logic didn't find any art 
+    # (i.e., args.existing_art_path is still None from embedded art or music file's parent dir),
+    # then try the recursive fallback art search in the original --from-dir path.
+    if args._internal_original_from_dir_path and not args.existing_art_path:
+        _handle_from_dir_art_search_fallback(args, parser)
 
     # Prepare initial UI configuration by deep copying the user's base configuration
     initial_ui_config = copy.deepcopy(user_config_base)
