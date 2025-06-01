@@ -54,9 +54,9 @@ Enter artist/album, select services, and click "Search".
 CoverFetcher.exe [OPTIONS]
 ```
 **Key Options:**
-*   `--artist "Name" --album "Title"`: Specify artist and album.
+*   `--artist "Name" --album "Title"`: Start a search with provided artist and album.
 *   `--from-file "/path/to/audio.mp3"`: Extract metadata and search.
-*   `--services "itunes,bandcamp"`: Specify active services and their order.
+*   `--services "itunes,bandcamp"`: Specify active services.
 *   `--min-width N --min-height M`: Filter by minimum dimensions.
 *   `--no-save-prompt`: Save images directly without a dialog.
 *   `--exit-on-download`: Exit after a successful download.
